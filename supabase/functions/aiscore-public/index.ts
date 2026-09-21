@@ -46,7 +46,7 @@ function normEvent(e:any,slug:string,leagueName:string){
   }));
   return {
     fixture:{id:Number(e?.id),date:e?.date||null,status:{short:statusOf(e),long:e?.status?.type?.description||null,elapsed:null},referee:null},
-    league:{id:slug,name:leagueName,season:null,round:null},
+    league:{id:null,code:slug,name:leagueName,season:null,round:null},
     teams:{
       home:{id:Number(home?.team?.id),name:home?.team?.displayName||home?.team?.name||"Home",logo:home?.team?.logo||null},
       away:{id:Number(away?.team?.id),name:away?.team?.displayName||away?.team?.name||"Away",logo:away?.team?.logo||null}
