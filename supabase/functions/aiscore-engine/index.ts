@@ -454,6 +454,9 @@ async function history(req: Request, url: URL) {
 async function analytics(req: Request, url: URL) {
   const days = url.searchParams.get("days");
   const mode = url.searchParams.get("mode");
+  const market = url.searchParams.get("market");
+  const confidence = url.searchParams.get("confidence");
+  const league = url.searchParams.get("league");
   const admin = adminClient();
 
   let query = admin
@@ -466,6 +469,9 @@ async function analytics(req: Request, url: URL) {
     query = query.gte("created_at", since);
   }
   if (mode === "prematch" || mode === "live") query = query.eq("aiscore_analyses.mode", mode);
+  if (market) query = query.eq("market", market);
+  if (confidence) query = query.eq("confidence", confidence);
+  if (league) query = query.eq("aiscore_analyses.league_name", league);
 
   const { data, error } = await query;
   if (error) return json(req, { error: "Cannot load analytics", details: error.message }, 500);
@@ -501,6 +507,16 @@ async function analytics(req: Request, url: URL) {
     return map;
   };
 
+  const byLeague: Record<string,any> = {};
+  for (const p of settled) {
+    const key = String(p.aiscore_analyses?.league_name || "Other");
+    if (!byLeague[key]) byLeague[key] = { total:0,wins:0,losses:0,voids:0 };
+    byLeague[key].total++;
+    if (p.result === "WIN") byLeague[key].wins++;
+    if (p.result === "LOSS") byLeague[key].losses++;
+    if (p.result === "VOID") byLeague[key].voids++;
+  }
+
   return json(req, {
     total_picks: picks.length,
     settled: settled.length,
@@ -514,7 +530,40 @@ async function analytics(req: Request, url: URL) {
     average_clv_pct: avg("clv_pct"),
     by_market: group("market"),
     by_confidence: group("confidence"),
+    by_league: byLeague,
   });
+}
+
+async function oddsHistory(req: Request, url: URL) {
+  const fixtureId = Number(url.searchParams.get("fixture"));
+  if (!Number.isFinite(fixtureId)) return json(req, { error: "Nedostaje fixture id" }, 400);
+  const admin = adminClient();
+  const { data, error } = await admin
+    .from("aiscore_odds_history")
+    .select("signal_key,bookmaker,odds,captured_at")
+    .eq("fixture_id", fixtureId)
+    .order("captured_at", { ascending: true })
+    .limit(1000);
+  if (error) return json(req, { error: "Cannot load odds history", details: error.message }, 500);
+
+  const grouped: Record<string, any> = {};
+  for (const row of data || []) {
+    if (!grouped[row.signal_key]) grouped[row.signal_key] = {
+      signal_key: row.signal_key,
+      opening_odds: Number(row.odds),
+      opening_at: row.captured_at,
+      opening_bookmaker: row.bookmaker,
+      current_odds: Number(row.odds),
+      current_at: row.captured_at,
+      current_bookmaker: row.bookmaker,
+      observations: 0,
+    };
+    grouped[row.signal_key].current_odds = Number(row.odds);
+    grouped[row.signal_key].current_at = row.captured_at;
+    grouped[row.signal_key].current_bookmaker = row.bookmaker;
+    grouped[row.signal_key].observations++;
+  }
+  return json(req, { data: Object.values(grouped) });
 }
 
 function settleOne(p: any, fixture: any) {
@@ -566,7 +615,7 @@ async function settle(req: Request) {
   const admin = adminClient();
   const { data: picks, error } = await admin
     .from("aiscore_analysis_picks")
-    .select("*,aiscore_analyses!inner(fixture_id)")
+    .select("*,aiscore_analyses!inner(fixture_id,source_snapshot)")
     .is("result", null)
     .eq("status", "QUALIFIED")
     .limit(100);
@@ -604,6 +653,27 @@ async function settle(req: Request) {
           clv_pct: clv,
           settled_at: new Date().toISOString(),
         }).eq("id", pick.id);
+
+        const review = {
+          result,
+          causal_attribution: "NOT_AUTOMATICALLY_INFERRED",
+          original_edge_pp: pick.edge_pp,
+          original_ev_pct: pick.ev_pct,
+          original_data_snapshot: pick.aiscore_analyses?.source_snapshot || {},
+          closing_odds: close?.odds || null,
+          clv_pct: clv,
+          notes: result === "LOSS"
+            ? (clv !== null && clv > 0
+                ? ["Outcome lost, but recorded closing price was shorter than the original signal price.", "Do not change strategy from one result; review over a larger sample."]
+                : ["Outcome lost. Result alone is not enough to infer a model flaw.", "Review data quality, lineup certainty and sample size over a larger sample."])
+            : result === "WIN"
+              ? ["Outcome won. Win alone is not evidence that the model was correctly calibrated.", "Keep evaluating edge, CLV and larger-sample performance."]
+              : ["Market settled void; preserve the original signal and exclude from win/loss rate."],
+        };
+        await admin.from("aiscore_model_reviews").upsert({
+          pick_id: pick.id,
+          review,
+        }, { onConflict: "pick_id" });
         updated++;
       }
     } catch {}
@@ -624,6 +694,7 @@ Deno.serve(async (req: Request) => {
     if (req.method === "GET" && action === "live_bundle") return await liveBundle(req, url);
     if (req.method === "GET" && action === "history") return await history(req, url);
     if (req.method === "GET" && action === "analytics") return await analytics(req, url);
+    if (req.method === "GET" && action === "odds_history") return await oddsHistory(req, url);
     if (req.method === "POST" && action === "save_analysis") return await saveAnalysis(req);
     if (req.method === "POST" && action === "settle") return await settle(req);
 
