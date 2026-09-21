@@ -2,7 +2,7 @@ import {
   dataQualityScore, estimateExpectedGoals, overallConfidence, priorityLeagueScore,
   rankPrematchOptions, summarizeRecentFixtures, summarizeTeamSeason,
   verdictFromPicks, liveGoalProbability, impliedProbability, fairOdds,
-  edgePercentagePoints, expectedValuePercent, liveStateHash
+  edgePercentagePoints, expectedValuePercent, liveStateHash, classifyLineup
 } from './analysisEngine'
 
 function stableHash(input) {
@@ -15,9 +15,6 @@ function stableHash(input) {
   return (hash >>> 0).toString(16)
 }
 
-function lineupConfirmed(bundle) {
-  return Array.isArray(bundle?.lineups) && bundle.lineups.length >= 2
-}
 
 export function buildPrematchAnalysis(bundle, settings = {}) {
   const fixture = bundle?.fixture
@@ -29,7 +26,8 @@ export function buildPrematchAnalysis(bundle, settings = {}) {
   const awayRecent = summarizeRecentFixtures(bundle.away_recent || [], awayId, 10)
   const homeSeason = summarizeTeamSeason(bundle.home_team_stats)
   const awaySeason = summarizeTeamSeason(bundle.away_team_stats)
-  const confirmed = lineupConfirmed(bundle)
+  const lineupState = classifyLineup(bundle?.lineups || [], bundle?.projected_lineup || null)
+  const confirmed = lineupState === 'CONFIRMED'
 
   const quality = dataQualityScore({
     homeRecentSample: homeRecent.sampleSize || 0,
@@ -103,7 +101,7 @@ export function buildPrematchAnalysis(bundle, settings = {}) {
       source_snapshot: {
         provider: 'API-Football',
         quality_reasons: quality.reasons,
-        lineup_status: confirmed ? 'CONFIRMED' : 'UNCONFIRMED',
+        lineup_status: lineupState,
         model_method: model?.method || null,
         unavailable: Object.entries(bundle.availability || {}).filter(([,v]) => v === false).map(([k]) => k),
       },
@@ -115,7 +113,7 @@ export function buildPrematchAnalysis(bundle, settings = {}) {
     awayRecent,
     homeSeason,
     awaySeason,
-    lineupStatus: confirmed ? 'CONFIRMED' : 'UNCONFIRMED',
+    lineupStatus: lineupState,
   }
 }
 
