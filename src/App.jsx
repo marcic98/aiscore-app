@@ -9,7 +9,7 @@ import {
 } from './analysisService'
 import {
   getToday, getPrematchBundle, getLiveBundle, saveAnalysis,
-  getHistory, getAnalytics, settleHistory
+  getHistory, getAnalytics, getOddsHistory, settleHistory
 } from './dataClient'
 
 const DEFAULT_SETTINGS = { minOdds: 1.2, minEdgePP: 3, minEvPct: 2 }
@@ -215,6 +215,7 @@ function MatchDetail({ fixture, stored, mode = 'prematch', onBack, onAnalyze, an
   const bundle = stored?.bundle
   const a = result?.analysis
   const picks = result?.picks || []
+  const oddsHistory = stored?.oddsHistory || []
   const home = fixture?.teams?.home
   const away = fixture?.teams?.away
 
@@ -224,6 +225,9 @@ function MatchDetail({ fixture, stored, mode = 'prematch', onBack, onAnalyze, an
       <p><strong>Competition:</strong> {fixture.league?.name}</p>
       <p><strong>Date:</strong> {new Date(fixture.fixture?.date).toLocaleString('sr-RS')}</p>
       <p><strong>Status:</strong> {fixture.fixture?.status?.long || fixtureStatus(fixture)}</p>
+      <p><strong>Table context:</strong> {result?.context?.home_rank ? `${home?.name} #${result.context.home_rank}` : '—'} · {result?.context?.away_rank ? `${away?.name} #${result.context.away_rank}` : '—'}</p>
+      <p><strong>Rest:</strong> {Number.isFinite(result?.context?.home_days_rest) ? `${result.context.home_days_rest.toFixed(1)}d` : '—'} / {Number.isFinite(result?.context?.away_days_rest) ? `${result.context.away_days_rest.toFixed(1)}d` : '—'}</p>
+      <p><strong>Referee:</strong> {result?.context?.referee || 'DATA UNAVAILABLE'} {result?.context?.referee ? '(referee averages unavailable)' : ''}</p>
       <p><strong>Analysis generated at:</strong> {a ? new Date(a.analysis_generated_at).toLocaleString('sr-RS') : '—'}</p>
       <p><strong>Data last updated:</strong> {a?.data_last_updated ? new Date(a.data_last_updated).toLocaleString('sr-RS') : 'DATA UNAVAILABLE'}</p>
     </div>
@@ -241,7 +245,7 @@ function MatchDetail({ fixture, stored, mode = 'prematch', onBack, onAnalyze, an
     if (tab === 'LINEUPS') return <LineupsBlock lineups={bundle.lineups || []}/>
     if (tab === 'PLAYERS') return <PlayersBlock lineups={bundle.lineups || []}/>
     if (tab === 'H2H') return <H2HBlock fixtures={bundle.h2h || []}/>
-    if (tab === 'ODDS') return <OddsBlock odds={bundle.odds || []}/>
+    if (tab === 'ODDS') return <OddsBlock odds={bundle.odds || []} history={oddsHistory}/>
     if (tab === 'AI ANALYSIS') return <div className="detail-copy">
       <p><strong>Method:</strong> deterministic weighted recent/season goal model + Poisson probabilities.</p>
       <p><strong>Home expected goals:</strong> {fmtNum(result?.model?.lambdaHome)}</p>
@@ -306,9 +310,17 @@ function H2HBlock({ fixtures }) {
   if (!fixtures.length) return <Unavailable text="H2H unavailable."/>
   return <div>{fixtures.slice(0,10).map((f) => <div className="h2h-row" key={f.fixture?.id}><span>{new Date(f.fixture?.date).toLocaleDateString('sr-RS')}</span><strong>{f.teams?.home?.name} {f.goals?.home} : {f.goals?.away} {f.teams?.away?.name}</strong></div>)}</div>
 }
-function OddsBlock({ odds }) {
+function OddsBlock({ odds, history = [] }) {
   if (!odds.length) return <Unavailable text="Odds provider returned no supported current prices. Edge/EV are not fabricated."/>
-  return <div>{odds.slice(0,30).map((o) => <div className="odds-row" key={o.signal_key}><span>{o.market}</span><strong>{o.selection}{o.line !== null ? ` ${o.line}` : ''}</strong><b>{fmtNum(o.odds)}</b><small>{o.bookmaker || 'bookmaker'}</small></div>)}</div>
+  const movement = new Map(history.map((x) => [x.signal_key, x]))
+  return <div>{odds.slice(0,30).map((o) => {
+    const m = movement.get(o.signal_key)
+    return <div className="odds-row odds-movement-row" key={o.signal_key}>
+      <span>{o.market}</span><strong>{o.selection}{o.line !== null ? ` ${o.line}` : ''}</strong>
+      <b>{fmtNum(o.odds)}</b><small>{o.bookmaker || 'bookmaker'}</small>
+      <em>{m ? `Open ${fmtNum(m.opening_odds)} → Current ${fmtNum(m.current_odds)} · ${m.observations} obs.` : 'Opening snapshot unavailable'}</em>
+    </div>
+  })}</div>
 }
 
 function LiveScreen({ liveFixtures, liveLoading, liveError, onRefresh, onOpen }) {
@@ -346,7 +358,7 @@ function HistoryScreen({ history, loading, error, onRefresh, settling }) {
   </section>
 }
 
-function AnalyticsScreen({ analytics, loading, error, days, setDays, mode, setMode, onLoad, settings, setSettings }) {
+function AnalyticsScreen({ analytics, loading, error, days, setDays, mode, setMode, marketFilter, setMarketFilter, confidenceFilter, setConfidenceFilter, leagueFilter, setLeagueFilter, onLoad, settings, setSettings }) {
   const cards = [
     ['Total Picks', analytics?.total_picks],['Wins', analytics?.wins],['Losses', analytics?.losses],['Voids', analytics?.voids],
     ['Win Rate', analytics?.win_rate !== null && analytics?.win_rate !== undefined ? fmtPct(analytics.win_rate) : '—'],
@@ -356,10 +368,17 @@ function AnalyticsScreen({ analytics, loading, error, days, setDays, mode, setMo
     ['Avg CLV', analytics?.average_clv_pct != null ? `${Number(analytics.average_clv_pct).toFixed(1)}%` : '—'],
   ]
   return <section className="page-panel"><div className="screen-head"><div><h2><TrendingUp/> ANALYTICS</h2><p className="muted">Performance po stvarno sačuvanim i settlementovanim predlozima.</p></div><button className="refresh-btn" onClick={onLoad} disabled={loading}><RefreshCw size={14}/></button></div>
-    <div className="analytics-filters"><select value={days} onChange={(e) => setDays(e.target.value)}><option value="7">7 DAYS</option><option value="30">30 DAYS</option><option value="90">90 DAYS</option><option value="">ALL TIME</option></select><select value={mode} onChange={(e) => setMode(e.target.value)}><option value="">ALL</option><option value="prematch">PREMATCH</option><option value="live">LIVE</option></select></div>
+    <div className="analytics-filters">
+      <select value={days} onChange={(e) => setDays(e.target.value)}><option value="7">7 DAYS</option><option value="30">30 DAYS</option><option value="90">90 DAYS</option><option value="">ALL TIME</option></select>
+      <select value={mode} onChange={(e) => setMode(e.target.value)}><option value="">ALL MODES</option><option value="prematch">PREMATCH</option><option value="live">LIVE</option></select>
+      <select value={marketFilter} onChange={(e) => setMarketFilter(e.target.value)}><option value="">ALL MARKETS</option><option>1X2</option><option>Double Chance</option><option>Draw No Bet</option><option>Goals</option><option>BTTS</option><option>Home Team Goals</option><option>Away Team Goals</option></select>
+      <select value={confidenceFilter} onChange={(e) => setConfidenceFilter(e.target.value)}><option value="">ALL CONFIDENCE</option><option>HIGH</option><option>MEDIUM</option><option>LOW</option></select>
+      <input value={leagueFilter} onChange={(e) => setLeagueFilter(e.target.value)} placeholder="League exact name"/>
+    </div>
     <ErrorBlock error={error}/>
     <div className="analytics-grid">{cards.map(([label,value]) => <div key={label}><small>{label}</small><b>{value ?? '—'}</b></div>)}</div>
     <div className="analysis-card"><div className="analysis-title"><BarChart3/> By Market</div>{Object.entries(analytics?.by_market || {}).map(([market,v]) => <div className="analytics-row" key={market}><span>{market}</span><b>{v.wins}W / {v.losses}L / {v.voids}V</b></div>)}</div>
+    <div className="analysis-card"><div className="analysis-title"><Trophy/> By League</div>{Object.entries(analytics?.by_league || {}).map(([league,v]) => <div className="analytics-row" key={league}><span>{league}</span><b>{v.wins}W / {v.losses}L / {v.voids}V</b></div>)}</div>
     <div className="analysis-card settings-box"><div className="analysis-title"><CircleUserRound/> Model Settings</div>
       <label><span>Minimal odds</span><input type="number" step="0.05" min="1.01" value={settings.minOdds} onChange={(e) => setSettings((s) => ({...s,minOdds:Number(e.target.value)||1.2}))}/></label>
       <label><span>Minimal edge (pp)</span><input type="number" step="0.5" min="0" value={settings.minEdgePP} onChange={(e) => setSettings((s) => ({...s,minEdgePP:Number(e.target.value)||0}))}/></label>
@@ -391,6 +410,9 @@ export default function App() {
   const [analyticsError, setAnalyticsError] = useState('')
   const [days, setDays] = useState('30')
   const [modeFilter, setModeFilter] = useState('')
+  const [marketFilter, setMarketFilter] = useState('')
+  const [confidenceFilter, setConfidenceFilter] = useState('')
+  const [leagueFilter, setLeagueFilter] = useState('')
   const [settings, setSettings] = useState(() => {
     try { return { ...DEFAULT_SETTINGS, ...JSON.parse(localStorage.getItem('aiscore-settings') || '{}') } }
     catch { return DEFAULT_SETTINGS }
@@ -419,7 +441,8 @@ export default function App() {
     const bundle = await getPrematchBundle(id)
     const result = buildPrematchAnalysis(bundle, settings)
     await saveAnalysis(result.analysis, result.picks)
-    const stored = { bundle, result }
+    const movement = await getOddsHistory(id).catch(() => ({ data: [] }))
+    const stored = { bundle, result, oddsHistory: movement.data || [] }
     setAnalyses((prev) => ({ ...prev, [id]: stored }))
     return stored
   }
@@ -468,7 +491,8 @@ export default function App() {
       const baseline = buildPrematchAnalysis(prematchBundle, settings)
       const liveResult = buildLiveAnalysis(liveBundle, baseline, settings)
       await saveAnalysis(liveResult.analysis, liveResult.picks)
-      setAnalyses((prev) => ({ ...prev, [id]: { bundle: { ...prematchBundle, ...liveBundle, odds: liveBundle.odds, lineups: liveBundle.lineups }, result: { ...liveResult, model: baseline.model, homeRecent: baseline.homeRecent, awayRecent: baseline.awayRecent, homeSeason: baseline.homeSeason, awaySeason: baseline.awaySeason, lineupStatus: liveBundle.lineups?.length ? 'CONFIRMED' : baseline.lineupStatus } } }))
+      const movement = await getOddsHistory(id).catch(() => ({ data: [] }))
+      setAnalyses((prev) => ({ ...prev, [id]: { bundle: { ...prematchBundle, ...liveBundle, odds: liveBundle.odds, lineups: liveBundle.lineups }, oddsHistory: movement.data || [], result: { ...liveResult, model: baseline.model, homeRecent: baseline.homeRecent, awayRecent: baseline.awayRecent, homeSeason: baseline.homeSeason, awaySeason: baseline.awaySeason, lineupStatus: liveBundle.lineups?.length ? 'CONFIRMED' : baseline.lineupStatus, context: baseline.context } } }))
       setSelected(liveBundle.fixture || fixture)
     } catch (e) { setLiveError(e.message) }
     finally { setAnalyzing(false) }
@@ -486,11 +510,11 @@ export default function App() {
 
   async function loadAnalytics() {
     setAnalyticsLoading(true); setAnalyticsError('')
-    try { setAnalytics(await getAnalytics({ days: days || null, mode: modeFilter || null })) }
+    try { setAnalytics(await getAnalytics({ days: days || null, mode: modeFilter || null, market: marketFilter || null, confidence: confidenceFilter || null, league: leagueFilter || null })) }
     catch (e) { setAnalyticsError(e.message) }
     finally { setAnalyticsLoading(false) }
   }
-  useEffect(() => { if (view === 'Analitika') loadAnalytics() }, [days, modeFilter])
+  useEffect(() => { if (view === 'Analitika') loadAnalytics() }, [days, modeFilter, marketFilter, confidenceFilter, leagueFilter])
 
   const selectedStored = selected ? analyses[selected.fixture?.id] : null
 
@@ -503,7 +527,7 @@ export default function App() {
         {view === 'Signali' && <SignalsScreen analyses={analyses} onOpenById={openById}/>}
         {view === 'Cheat' && <CheatSheet analyses={analyses} onOpenById={openById}/>}
         {view === 'Istorija' && <HistoryScreen history={history} loading={historyLoading} error={historyError} onRefresh={refreshHistory} settling={settling}/>}
-        {view === 'Analitika' && <AnalyticsScreen analytics={analytics} loading={analyticsLoading} error={analyticsError} days={days} setDays={setDays} mode={modeFilter} setMode={setModeFilter} onLoad={loadAnalytics} settings={settings} setSettings={setSettings}/>}
+        {view === 'Analitika' && <AnalyticsScreen analytics={analytics} loading={analyticsLoading} error={analyticsError} days={days} setDays={setDays} mode={modeFilter} setMode={setModeFilter} marketFilter={marketFilter} setMarketFilter={setMarketFilter} confidenceFilter={confidenceFilter} setConfidenceFilter={setConfidenceFilter} leagueFilter={leagueFilter} setLeagueFilter={setLeagueFilter} onLoad={loadAnalytics} settings={settings} setSettings={setSettings}/>}
       </>}
     </main>
 
