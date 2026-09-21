@@ -444,7 +444,7 @@ async function history(req: Request, url: URL) {
   const admin = adminClient();
   const { data, error } = await admin
     .from("aiscore_analyses")
-    .select("*,aiscore_analysis_picks(*)")
+    .select("*,aiscore_analysis_picks(*,aiscore_model_reviews(*))")
     .order("created_at", { ascending: false })
     .limit(limit);
   if (error) return json(req, { error: "Cannot load history", details: error.message }, 500);
