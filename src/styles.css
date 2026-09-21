@@ -57,3 +57,5 @@ main{padding:12px}.muted{color:#8398a0;font-size:11px}.premium{position:relative
 .odds-movement-row{grid-template-columns:1fr 1.1fr auto auto}
 .odds-movement-row em{grid-column:1/-1;font-style:normal;color:#78909a;font-size:7px}
 @media (min-width:700px){.analytics-filters{grid-template-columns:repeat(5,minmax(0,1fr))}}
+
+.history-pick-wrap{border-top:1px solid #14313c;padding-top:8px;margin-top:8px}.history-pick-wrap .history-pick{border-top:0;margin-top:0;padding-top:0}.model-review{margin-top:7px;background:#06151e;border:1px solid #173744;border-radius:10px;padding:8px}.model-review small,.model-review span{display:block}.model-review small{font-size:7px;color:#ffc15d;font-weight:900}.model-review span{font-size:8px;color:#8da0a8;line-height:1.4;margin-top:3px}
