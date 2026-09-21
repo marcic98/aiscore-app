@@ -102,7 +102,7 @@ test('lineup classifier never labels missing lineup as confirmed', () => {
 })
 
 
-test('public prematch ranking can qualify a probability-only pick without odds', () => {
+test('public prematch never qualifies a bet without current odds', () => {
   const picks = rankPublicPrematchOptions({
     model: { lambdaHome: 1.8, lambdaAway: 0.7 },
     homeRecent: { sampleSize: 8 },
@@ -110,10 +110,12 @@ test('public prematch ranking can qualify a probability-only pick without odds',
     minProbability: 0.67,
   })
   assert.equal(picks.length, 3)
-  assert.equal(picks[0].status, 'QUALIFIED')
+  assert.ok(picks.every((p) => p.status === 'NO_QUALIFIED_BET'))
   assert.equal(picks[0].odds, null)
+  assert.equal(picks[0].impliedProbability, null)
   assert.equal(picks[0].edgePP, null)
   assert.equal(picks[0].evPct, null)
+  assert.ok(Number.isFinite(picks[0].aiProbability))
 })
 
 test('public prematch ranking skips when recent samples are insufficient', () => {
@@ -123,4 +125,18 @@ test('public prematch ranking skips when recent samples are insufficient', () =>
     awayRecent: { sampleSize: 8 },
   })
   assert.deepEqual(picks.map((p) => p.status), ['NO_QUALIFIED_BET','NO_QUALIFIED_BET','NO_QUALIFIED_BET'])
+})
+
+
+test('price thresholds force PRESKOCI when edge or EV is insufficient', () => {
+  const picks = rankPrematchOptions({
+    model: { lambdaHome: 1.4, lambdaAway: 1.1 },
+    odds: [{ market:'Goals', selection:'Over', line:2.5, odds:1.20, signalKey:'Goals|Over|2.5' }],
+    quality: { label:'HIGH', score:90 },
+    lineupConfirmed: true,
+    minOdds: 1.2,
+    minEdgePP: 3,
+    minEvPct: 2,
+  })
+  assert.ok(picks.every((p) => p.status === 'NO_QUALIFIED_BET'))
 })

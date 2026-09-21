@@ -396,34 +396,23 @@ export function rankPublicPrematchOptions({ model, homeRecent, awayRecent, minPr
     { market:'Goals', selection:'Under', line:2.5, p:totalUnderProbability(total,2.5) },
     { market:'BTTS', selection:'Yes', line:null, p:bttsProbability(model.lambdaHome,model.lambdaAway) },
     { market:'BTTS', selection:'No', line:null, p:1-(bttsProbability(model.lambdaHome,model.lambdaAway) ?? 1) },
-  ].filter((x) => Number.isFinite(x.p))
-
-  const qualified = candidates
-    .filter((x) => x.p >= minProbability)
+  ].filter((x) => Number.isFinite(x.p) && x.p >= minProbability)
     .sort((a,b) => b.p-a.p)
     .slice(0,3)
-    .map((x,i) => ({
-      rank:i+1,
-      status:'QUALIFIED',
-      signalKey:[x.market,x.selection,x.line ?? ''].join('|'),
-      market:x.market,
-      selection:x.selection,
-      line:x.line,
-      bookmaker:null,
-      odds:null,
-      aiProbability:x.p,
-      impliedProbability:null,
-      fairOdds:fairOdds(x.p),
-      edgePP:null,
-      evPct:null,
-      confidence:x.p >= 0.78 ? 'HIGH' : 'MEDIUM',
-      stakeUnits:0,
-      why:`Statisticki model procenjuje verovatnocu na ${(x.p*100).toFixed(1)}% na osnovu skorasnje forme i Poisson modela. Kvota nije dostupna, pa value/EV nisu potvrdeni.`,
-      mainRisk:'Bez trenutne kvote ne moze da se potvrdi value. Promene sastava pre meca mogu promeniti procenu.',
-    }))
 
-  while (qualified.length < 3) qualified.push(noQualified(qualified.length+1,'Nijedna dodatna opcija nije presla statisticki prag.'))
-  return qualified
+  const rows = candidates.map((x,i) => ({
+    ...noQualified(i+1, 'Statisticki scenario postoji, ali bez trenutne kvote value/EDGE/EV ne mogu biti potvrdeni.'),
+    market:x.market,
+    selection:x.selection,
+    line:x.line,
+    aiProbability:x.p,
+    fairOdds:fairOdds(x.p),
+    signalKey:[x.market,x.selection,x.line ?? ''].join('|'),
+    why:`Model procenjuje scenario na ${(x.p*100).toFixed(1)}%, ali bez stvarne trenutne kvote AIScore ne daje IGRAJ signal.`,
+    mainRisk:'Cena trzista nije dostupna; implied probability, edge i EV su unavailable.',
+  }))
+  while (rows.length < 3) rows.push(noQualified(rows.length+1,'Nijedna dodatna opcija nije presla statisticki prag.'))
+  return rows
 }
 
 export function rankPrematchOptions({ model, odds, quality, lineupConfirmed = false, minOdds = 1.2, minEdgePP = 3, minEvPct = 2 }) {
