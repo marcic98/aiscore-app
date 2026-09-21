@@ -1,9 +1,18 @@
 {
   "name": "AI Score",
   "short_name": "AI Score",
+  "description": "Mobile live sports analytics and signal interface",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
   "background_color": "#06131b",
   "theme_color": "#06131b",
-  "icons": []
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
 }
