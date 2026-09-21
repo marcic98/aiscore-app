@@ -59,7 +59,11 @@ export function buildPrematchAnalysis(bundle, settings = {}) {
   const awayRecent = summarizeRecentFixtures(bundle.away_recent || [], awayId, 10)
   const homeSeason = summarizeTeamSeason(bundle.home_team_stats)
   const awaySeason = summarizeTeamSeason(bundle.away_team_stats)
-  const lineupState = classifyLineup(bundle?.lineups || [], bundle?.projected_lineup || null)
+  const lineupState = bundle?.lineup_confirmed === true
+    ? 'CONFIRMED'
+    : bundle?.lineup_confirmed === false
+      ? 'PROJECTED'
+      : classifyLineup(bundle?.lineups || [], bundle?.projected_lineup || null)
   const confirmed = lineupState === 'CONFIRMED'
 
   const context = extractContext(bundle, fixture)
