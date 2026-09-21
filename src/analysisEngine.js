@@ -561,3 +561,16 @@ export function closingLineValuePercent(signalOdds, closingOdds) {
   if (![s,c].every(Number.isFinite) || s <= 1 || c <= 1) return null
   return (s / c - 1) * 100
 }
+
+
+export function classifyLineup(confirmedLineups, projectedLineup = null) {
+  const confirmed = Array.isArray(confirmedLineups) &&
+    confirmedLineups.length >= 2 &&
+    confirmedLineups.every((team) => Array.isArray(team?.startXI) && team.startXI.length >= 7)
+  if (confirmed) return 'CONFIRMED'
+  const projected = projectedLineup &&
+    Array.isArray(projectedLineup) &&
+    projectedLineup.length >= 2
+  if (projected) return 'PROJECTED'
+  return 'UNAVAILABLE'
+}
