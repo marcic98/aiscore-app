@@ -352,7 +352,13 @@ function HistoryScreen({ history, loading, error, onRefresh, settling }) {
     <ErrorBlock error={error}/>
     {history.map((a) => <div className="history-analysis" key={a.id}>
       <div className="history-analysis-head"><div><strong>{a.home_team_name} - {a.away_team_name}</strong><small>{a.mode.toUpperCase()} · {new Date(a.analysis_generated_at).toLocaleString('sr-RS')}</small></div><span className={badgeClass(a.verdict)}>{a.verdict}</span></div>
-      {(a.aiscore_analysis_picks || []).filter((p) => p.status === 'QUALIFIED').map((p) => <div className="history-pick" key={p.id}><span>{p.market} · {p.selection}</span><b>{fmtNum(p.odds)}</b><strong className={badgeClass(p.result || 'PENDING')}>{p.result || 'PENDING'}</strong></div>)}
+      {(a.aiscore_analysis_picks || []).filter((p) => p.status === 'QUALIFIED').map((p) => {
+        const review = p.aiscore_model_reviews?.[0]?.review
+        return <div className="history-pick-wrap" key={p.id}>
+          <div className="history-pick"><span>{p.market} · {p.selection}</span><b>{fmtNum(p.odds)}</b><strong className={badgeClass(p.result || 'PENDING')}>{p.result || 'PENDING'}</strong></div>
+          {review?.notes?.length ? <div className="model-review"><small>MODEL REVIEW</small>{review.notes.map((n,i) => <span key={i}>{n}</span>)}</div> : null}
+        </div>
+      })}
     </div>)}
     {!loading && !history.length && <div className="empty">Istorija je prazna.</div>}
   </section>
@@ -379,6 +385,7 @@ function AnalyticsScreen({ analytics, loading, error, days, setDays, mode, setMo
     <div className="analytics-grid">{cards.map(([label,value]) => <div key={label}><small>{label}</small><b>{value ?? '—'}</b></div>)}</div>
     <div className="analysis-card"><div className="analysis-title"><BarChart3/> By Market</div>{Object.entries(analytics?.by_market || {}).map(([market,v]) => <div className="analytics-row" key={market}><span>{market}</span><b>{v.wins}W / {v.losses}L / {v.voids}V</b></div>)}</div>
     <div className="analysis-card"><div className="analysis-title"><Trophy/> By League</div>{Object.entries(analytics?.by_league || {}).map(([league,v]) => <div className="analytics-row" key={league}><span>{league}</span><b>{v.wins}W / {v.losses}L / {v.voids}V</b></div>)}</div>
+    <div className="analysis-card"><div className="analysis-title"><ShieldCheck/> By Confidence</div>{Object.entries(analytics?.by_confidence || {}).map(([conf,v]) => <div className="analytics-row" key={conf}><span>{conf}</span><b>{v.wins}W / {v.losses}L / {v.voids}V</b></div>)}</div>
     <div className="analysis-card settings-box"><div className="analysis-title"><CircleUserRound/> Model Settings</div>
       <label><span>Minimal odds</span><input type="number" step="0.05" min="1.01" value={settings.minOdds} onChange={(e) => setSettings((s) => ({...s,minOdds:Number(e.target.value)||1.2}))}/></label>
       <label><span>Minimal edge (pp)</span><input type="number" step="0.5" min="0" value={settings.minEdgePP} onChange={(e) => setSettings((s) => ({...s,minEdgePP:Number(e.target.value)||0}))}/></label>
