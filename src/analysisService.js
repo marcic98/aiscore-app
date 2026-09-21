@@ -138,7 +138,7 @@ export function buildPrematchAnalysis(bundle, settings = {}) {
       analysis_generated_at: new Date().toISOString(),
       data_last_updated: bundle.data_last_updated ?? null,
       source_snapshot: {
-        provider: 'API-Football',
+        provider: bundle?.provider || 'Sportmonks',
         quality_reasons: quality.reasons,
         lineup_status: lineupState,
         model_method: model?.method || null,
