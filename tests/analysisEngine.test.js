@@ -100,3 +100,27 @@ test('lineup classifier never labels missing lineup as confirmed', () => {
   ]
   assert.equal(classifyLineup(confirmed, null), 'CONFIRMED')
 })
+
+
+test('public prematch ranking can qualify a probability-only pick without odds', () => {
+  const picks = rankPublicPrematchOptions({
+    model: { lambdaHome: 1.8, lambdaAway: 0.7 },
+    homeRecent: { sampleSize: 8 },
+    awayRecent: { sampleSize: 8 },
+    minProbability: 0.67,
+  })
+  assert.equal(picks.length, 3)
+  assert.equal(picks[0].status, 'QUALIFIED')
+  assert.equal(picks[0].odds, null)
+  assert.equal(picks[0].edgePP, null)
+  assert.equal(picks[0].evPct, null)
+})
+
+test('public prematch ranking skips when recent samples are insufficient', () => {
+  const picks = rankPublicPrematchOptions({
+    model: { lambdaHome: 1.5, lambdaAway: 1.0 },
+    homeRecent: { sampleSize: 4 },
+    awayRecent: { sampleSize: 8 },
+  })
+  assert.deepEqual(picks.map((p) => p.status), ['NO_QUALIFIED_BET','NO_QUALIFIED_BET','NO_QUALIFIED_BET'])
+})
