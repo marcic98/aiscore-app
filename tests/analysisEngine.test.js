@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import {
   impliedProbability, edgePercentagePoints, expectedValuePercent, fairOdds,
   expectedValueDnbPercent, dataQualityScore, estimateExpectedGoals,
-  rankPrematchOptions, settlePick, closingLineValuePercent,
+  rankPrematchOptions, rankPublicPrematchOptions, settlePick, closingLineValuePercent,
   liveStateHash, probabilityForMarket, classifyLineup
 } from '../src/analysisEngine.js'
 
