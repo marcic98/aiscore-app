@@ -1,16 +1,16 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Activity, Brain, ChevronLeft, ChevronRight, Clock3, Home, Radio,
+  Activity, Brain, ChevronLeft, ChevronRight, Clock3, Home,
   RefreshCw, ShieldCheck, Target, Trophy
 } from 'lucide-react'
-import { buildPrematchAnalysis, buildLiveAnalysis } from './analysisService'
+import { buildPrematchAnalysis } from './analysisService'
 import {
-  getToday, getPrematchBundle, getLiveBundle, saveAnalysis,
-  getHistory, getOddsHistory, settleHistory
+  getToday, getPrematchBundle, saveAnalysis,
+  getHistory, getOddsHistory
 } from './dataClient'
 
 const DEFAULT_SETTINGS = { minOdds: 1.2, minEdgePP: 3, minEvPct: 2 }
-const FILTERS = ['SVE', 'IGRAJ', 'SAČEKAJ', 'PRESKOČI']
+const FILTERS = ['SVE', 'IGRAJ', 'PRESKOČI']
 
 function fmtPct(value, digits = 0) {
   return Number.isFinite(Number(value)) ? `${(Number(value) * 100).toFixed(digits)}%` : '—'
@@ -26,15 +26,14 @@ function localDateKey() {
   return `${y}-${m}-${day}`
 }
 function fixtureStatus(f) { return f?.fixture?.status?.short || '-' }
-function isLiveStatus(s) { return ['1H','HT','2H','ET','BT','P','INT','LIVE'].includes(s) }
 function isFinishedStatus(s) { return ['FT','AET','PEN','CANC','PST','ABD','AWD','WO'].includes(s) }
 function verdictClass(v) {
   if (v === 'IGRAJ' || v === 'WIN') return 'verdict-play'
-  if (v === 'CEKAJ' || v === 'SAČEKAJ' || v === 'VOID') return 'verdict-wait'
+  if (v === 'VOID') return 'verdict-wait'
   return 'verdict-skip'
 }
 function verdictLabel(v) {
-  if (v === 'CEKAJ') return 'SAČEKAJ'
+  if (v === 'CEKAJ') return 'PRESKOČI'
   return v || 'PRESKOČI'
 }
 function pickLabel(pick) {
@@ -84,7 +83,6 @@ function TodayScreen({ fixtures, analyses, loading, analyzing, progress, error, 
     return v === filter
   })
   const plays = rows.filter((x) => x.result?.analysis?.verdict === 'IGRAJ').length
-  const waits = rows.filter((x) => x.result?.analysis?.verdict === 'CEKAJ').length
   const skips = rows.filter((x) => x.result?.analysis?.verdict === 'PRESKOCI').length
 
   return <>
@@ -102,7 +100,6 @@ function TodayScreen({ fixtures, analyses, loading, analyzing, progress, error, 
 
     <section className="summary-strip">
       <div><b>{plays}</b><span>IGRAJ</span></div>
-      <div><b>{waits}</b><span>SAČEKAJ</span></div>
       <div><b>{skips}</b><span>PRESKOČI</span></div>
     </section>
 
@@ -110,42 +107,21 @@ function TodayScreen({ fixtures, analyses, loading, analyzing, progress, error, 
 
     <section className="lite-list">
       <div className="lite-section-title"><Target size={18}/><span>Danas</span></div>
-      {loading && !fixtures.length ? <Loading text="Učitavam utakmice..."/> : filtered.map(({fixture,result}) => {
-        const live = isLiveStatus(fixtureStatus(fixture))
-        return <button className="lite-match" key={fixture.fixture?.id} onClick={() => onOpen(fixture, live ? 'live' : 'prematch')}>
+      {loading && !fixtures.length ? <Loading text="Učitavam utakmice..."/> : filtered.map(({fixture,result}) => <button className="lite-match" key={fixture.fixture?.id} onClick={() => onOpen(fixture)}>
           <div className="lite-time">
-            <strong>{live ? (fixture.fixture?.status?.elapsed ? `${fixture.fixture.status.elapsed}'` : 'LIVE') : new Date(fixture.fixture?.date).toLocaleTimeString('sr-RS',{hour:'2-digit',minute:'2-digit'})}</strong>
+            <strong>{new Date(fixture.fixture?.date).toLocaleTimeString('sr-RS',{hour:'2-digit',minute:'2-digit'})}</strong>
             <small>{fixture.league?.name}</small>
           </div>
           <div className="lite-teams">
             <span>{fixture.teams?.home?.name}</span>
             <span>{fixture.teams?.away?.name}</span>
-            {live && <b>{fixture.goals?.home ?? 0} : {fixture.goals?.away ?? 0}</b>}
           </div>
           <PickSummary result={result}/>
           <ChevronRight size={18}/>
-        </button>
-      })}
+        </button>)}
       {!loading && !filtered.length && <div className="lite-empty"><span>Nema mečeva u ovom filteru.</span></div>}
     </section>
   </>
-}
-
-function LiveScreen({ fixtures, analyses, loading, error, onRefresh, onOpen }) {
-  return <section className="lite-page">
-    <div className="lite-page-head">
-      <div><small>LIVE RADAR</small><h2>Utakmice uživo</h2><p>Osvežavanje je ručno da ne trošimo API bez potrebe.</p></div>
-      <button className="round-refresh" onClick={onRefresh} disabled={loading}><RefreshCw className={loading?'spin':''}/></button>
-    </div>
-    <ErrorBox error={error}/>
-    {loading && !fixtures.length ? <Loading text="Tražim LIVE utakmice..."/> : fixtures.map((fixture) => <button className="lite-match live" key={fixture.fixture?.id} onClick={() => onOpen(fixture,'live')}>
-      <div className="lite-time"><strong>{fixture.fixture?.status?.elapsed ? `${fixture.fixture.status.elapsed}'` : 'LIVE'}</strong><small>{fixture.league?.name}</small></div>
-      <div className="lite-teams"><span>{fixture.teams?.home?.name}</span><span>{fixture.teams?.away?.name}</span><b>{fixture.goals?.home ?? 0} : {fixture.goals?.away ?? 0}</b></div>
-      <PickSummary result={analyses[fixture.fixture?.id]?.result}/>
-      <ChevronRight size={18}/>
-    </button>)}
-    {!loading && !fixtures.length && <div className="lite-empty"><span>Trenutno nema dostupnih LIVE utakmica.</span></div>}
-  </section>
 }
 
 function HistoryScreen({ history, loading, error, onRefresh }) {
@@ -168,7 +144,7 @@ function HistoryScreen({ history, loading, error, onRefresh }) {
   </section>
 }
 
-function DetailScreen({ fixture, stored, mode, loading, onBack, onAnalyze }) {
+function DetailScreen({ fixture, stored, loading, onBack, onAnalyze }) {
   const result = stored?.result
   const pick = result?.picks?.find((p) => p.status === 'QUALIFIED') || result?.picks?.find((p) => p.status === 'CEKAJ')
   const verdict = result?.analysis?.verdict
@@ -178,10 +154,10 @@ function DetailScreen({ fixture, stored, mode, loading, onBack, onAnalyze }) {
       <small>{fixture.league?.name}</small>
       <div className="detail-lite-teams">
         <strong>{fixture.teams?.home?.name}</strong>
-        <b>{mode==='live' ? `${fixture.goals?.home ?? 0} : ${fixture.goals?.away ?? 0}` : 'VS'}</b>
+        <b>VS</b>
         <strong>{fixture.teams?.away?.name}</strong>
       </div>
-      <span>{mode==='live' && fixture.fixture?.status?.elapsed ? `${fixture.fixture.status.elapsed}'` : new Date(fixture.fixture?.date).toLocaleString('sr-RS')}</span>
+      <span>{new Date(fixture.fixture?.date).toLocaleString('sr-RS')}</span>
     </div>
 
     {!result ? <button className="analyze-big" onClick={onAnalyze} disabled={loading}><Brain/>{loading ? 'ANALIZIRAM...' : 'ANALIZIRAJ MEČ'}</button> : <>
@@ -217,15 +193,11 @@ function DetailScreen({ fixture, stored, mode, loading, onBack, onAnalyze }) {
 export default function App() {
   const [view, setView] = useState('DANAS')
   const [fixtures, setFixtures] = useState([])
-  const [liveFixtures, setLiveFixtures] = useState([])
   const [analyses, setAnalyses] = useState({})
   const [selected, setSelected] = useState(null)
-  const [selectedMode, setSelectedMode] = useState('prematch')
   const [loadingToday, setLoadingToday] = useState(false)
-  const [loadingLive, setLoadingLive] = useState(false)
   const [analyzing, setAnalyzing] = useState(false)
   const [todayError, setTodayError] = useState('')
-  const [liveError, setLiveError] = useState('')
   const [history, setHistory] = useState([])
   const [historyLoading, setHistoryLoading] = useState(false)
   const [historyError, setHistoryError] = useState('')
@@ -236,7 +208,6 @@ export default function App() {
 
   useEffect(() => { loadToday() }, [])
   useEffect(() => {
-    if (view === 'LIVE' && !liveFixtures.length) refreshLive()
     if (view === 'ISTORIJA') refreshHistory()
   }, [view])
 
@@ -284,34 +255,10 @@ export default function App() {
     setAnalyzing(false)
   }
 
-  async function refreshLive() {
-    if (loadingLive) return
-    setLoadingLive(true); setLiveError('')
-    try {
-      const data = await getLiveBundle()
-      setLiveFixtures(data.data || [])
-    } catch (e) { setLiveError(e.message || 'LIVE podaci nisu dostupni.') }
-    finally { setLoadingLive(false) }
-  }
-
-  async function openMatch(fixture, mode='prematch') {
-    setSelected(fixture); setSelectedMode(mode)
+  async function openMatch(fixture) {
+    setSelected(fixture)
     const id = fixture.fixture?.id
-    if (mode === 'live') {
-      setAnalyzing(true)
-      try {
-        const [liveBundle,prematchBundle] = await Promise.all([getLiveBundle(id),getPrematchBundle(id)])
-        const baseline = buildPrematchAnalysis(prematchBundle, settings)
-        const liveResult = buildLiveAnalysis(liveBundle, baseline, settings)
-        await saveAnalysis(liveResult.analysis, liveResult.picks).catch(() => null)
-        setAnalyses((prev) => ({...prev,[id]:{
-          bundle:{...prematchBundle,...liveBundle},
-          result:{...liveResult,model:baseline.model,homeRecent:baseline.homeRecent,awayRecent:baseline.awayRecent,lineupStatus:baseline.lineupStatus}
-        }}))
-        if (liveBundle.fixture) setSelected(liveBundle.fixture)
-      } catch (e) { setLiveError(e.message) }
-      finally { setAnalyzing(false) }
-    } else if (!analyses[id]) {
+    if (!analyses[id]) {
       setAnalyzing(true)
       try { await analyzePrematch(fixture) } catch (e) { setTodayError(e.message) }
       finally { setAnalyzing(false) }
@@ -321,7 +268,6 @@ export default function App() {
   async function refreshHistory() {
     setHistoryLoading(true); setHistoryError('')
     try {
-      await settleHistory().catch(() => null)
       const data = await getHistory(100)
       setHistory(data.data || [])
     } catch (e) { setHistoryError(e.message) }
@@ -333,16 +279,15 @@ export default function App() {
   return <div className="app-shell lite-shell">
     <Header/>
     <main>
-      {selected ? <DetailScreen fixture={selected} stored={selectedStored} mode={selectedMode} loading={analyzing} onBack={() => setSelected(null)} onAnalyze={() => openMatch(selected,selectedMode)}/> : <>
+      {selected ? <DetailScreen fixture={selected} stored={selectedStored} loading={analyzing} onBack={() => setSelected(null)} onAnalyze={() => openMatch(selected)}/> : <>
         {view === 'DANAS' && <TodayScreen fixtures={fixtures} analyses={analyses} loading={loadingToday} analyzing={analyzing} progress={progress} error={todayError} onRefresh={loadToday} onOpen={openMatch} filter={filter} setFilter={setFilter}/>}
-        {view === 'LIVE' && <LiveScreen fixtures={liveFixtures} analyses={analyses} loading={loadingLive} error={liveError} onRefresh={refreshLive} onOpen={openMatch}/>}
         {view === 'ISTORIJA' && <HistoryScreen history={history} loading={historyLoading} error={historyError} onRefresh={refreshHistory}/>}
       </>}
     </main>
 
     {!selected && <nav className="bottom-nav lite-nav">
       {[
-        ['DANAS',Home],['LIVE',Radio],['ISTORIJA',Clock3]
+        ['DANAS',Home],['ISTORIJA',Clock3]
       ].map(([name,Icon]) => <button key={name} className={view===name?'active':''} onClick={() => setView(name)}><Icon/><span>{name}</span></button>)}
     </nav>}
   </div>
