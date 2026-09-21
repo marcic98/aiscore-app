@@ -1,5 +1,5 @@
 export const ENGINE_URL = 'https://pifmgezknskolgmbhygb.supabase.co/functions/v1/aiscore-engine'
-export const SPORTS_URL = 'https://pifmgezknskolgmbhygb.supabase.co/functions/v1/aiscore-public-football'
+export const SPORTS_URL = 'https://pifmgezknskolgmbhygb.supabase.co/functions/v1/aiscore-public'
 
 async function request(action, { method = 'GET', params = {}, body = null, baseUrl = ENGINE_URL } = {}) {
   const url = new URL(baseUrl)
@@ -25,12 +25,10 @@ async function request(action, { method = 'GET', params = {}, body = null, baseU
 }
 
 export const getToday = (date) => request('today', { baseUrl: SPORTS_URL, params: { date } })
-export const getPrematchBundle = (fixture) => request('prematch_bundle', { baseUrl: SPORTS_URL, params: { fixture } })
+export const getPrematchBundle = (fixture, league, date) => request('prematch_bundle', { baseUrl: SPORTS_URL, params: { fixture, league, date } })
 export const saveAnalysis = (analysis, picks) => request('save_analysis', { method: 'POST', body: { analysis, picks } })
 export const getHistory = (limit = 100) => request('history', { params: { limit } })
 export const getAnalytics = ({ days = null, mode = null, market = null, confidence = null, league = null } = {}) =>
   request('analytics', { params: { days, mode, market, confidence, league } })
 export const getOddsHistory = (fixture) => request('odds_history', { params: { fixture } })
 export const settleHistory = () => request('settle', { method: 'POST' })
-
-export const checkSportsProvider = () => request('health', { baseUrl: SPORTS_URL })

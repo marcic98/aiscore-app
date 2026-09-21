@@ -1,6 +1,6 @@
 import {
   dataQualityScore, estimateExpectedGoals, overallConfidence, priorityLeagueScore,
-  rankPrematchOptions, summarizeRecentFixtures, summarizeTeamSeason,
+  rankPrematchOptions, rankPublicPrematchOptions, summarizeRecentFixtures, summarizeTeamSeason,
   verdictFromPicks, liveGoalProbability, impliedProbability, fairOdds,
   edgePercentagePoints, expectedValuePercent, liveStateHash, classifyLineup
 } from './analysisEngine'
@@ -68,7 +68,7 @@ export function buildPrematchAnalysis(bundle, settings = {}) {
 
   const context = extractContext(bundle, fixture)
 
-  const quality = dataQualityScore({
+  const baseQuality = dataQualityScore({
     homeRecentSample: homeRecent.sampleSize || 0,
     awayRecentSample: awayRecent.sampleSize || 0,
     teamSeasonStats: homeSeason.available && awaySeason.available,
@@ -80,6 +80,15 @@ export function buildPrematchAnalysis(bundle, settings = {}) {
     fresh: !!bundle?.data_last_updated,
     priorityLeague: priorityLeagueScore(fixture?.league?.name) > 0,
   })
+  const publicMode = bundle?.provider === 'public-web'
+  const publicSamplesOk = (homeRecent.sampleSize || 0) >= 5 && (awayRecent.sampleSize || 0) >= 5
+  const quality = publicMode
+    ? {
+        score: publicSamplesOk ? Math.min(65, 45 + Math.min(homeRecent.sampleSize, awayRecent.sampleSize) * 2) : Math.min(35, baseQuality.score),
+        label: publicSamplesOk ? 'MEDIUM' : 'LOW',
+        reasons: publicSamplesOk ? ['public_recent_form_5plus','no_api_key','no_odds_value_check'] : ['insufficient_public_history']
+      }
+    : baseQuality
 
   const model = estimateExpectedGoals({
     homeRecent,
@@ -92,15 +101,17 @@ export function buildPrematchAnalysis(bundle, settings = {}) {
     awayKeyAbsences: 0,
   })
 
-  const picks = rankPrematchOptions({
-    model,
-    odds: bundle.odds || [],
-    quality,
-    lineupConfirmed: confirmed,
-    minOdds: Number(settings.minOdds ?? 1.2),
-    minEdgePP: Number(settings.minEdgePP ?? 3),
-    minEvPct: Number(settings.minEvPct ?? 2),
-  })
+  const picks = publicMode
+    ? rankPublicPrematchOptions({ model, homeRecent, awayRecent, minProbability: Number(settings.minProbability ?? 0.67) })
+    : rankPrematchOptions({
+        model,
+        odds: bundle.odds || [],
+        quality,
+        lineupConfirmed: confirmed,
+        minOdds: Number(settings.minOdds ?? 1.2),
+        minEdgePP: Number(settings.minEdgePP ?? 3),
+        minEvPct: Number(settings.minEvPct ?? 2),
+      })
 
   const verdict = verdictFromPicks(picks, quality.label)
   const confidence = overallConfidence(picks, quality.label)
@@ -138,10 +149,11 @@ export function buildPrematchAnalysis(bundle, settings = {}) {
       analysis_generated_at: new Date().toISOString(),
       data_last_updated: bundle.data_last_updated ?? null,
       source_snapshot: {
-        provider: bundle?.provider || 'Sportmonks',
+        provider: bundle?.provider || 'unknown',
         quality_reasons: quality.reasons,
         lineup_status: lineupState,
         model_method: model?.method || null,
+        value_check: publicMode ? 'UNAVAILABLE_WITHOUT_ODDS' : 'ODDS_BASED',
         unavailable: Object.entries(bundle.availability || {}).filter(([,v]) => v === false).map(([k]) => k),
         context,
       },

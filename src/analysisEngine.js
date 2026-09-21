@@ -379,6 +379,53 @@ function stakeFor(confidence, edgePP, quality) {
   return 0.5
 }
 
+
+export function rankPublicPrematchOptions({ model, homeRecent, awayRecent, minProbability = 0.67 }) {
+  if (!model || (homeRecent?.sampleSize || 0) < 5 || (awayRecent?.sampleSize || 0) < 5) {
+    return noQualifiedTop3('Nema najmanje 5 prethodnih meceva za obe ekipe.')
+  }
+
+  const outcomes = matchOutcomeProbabilities(model.lambdaHome, model.lambdaAway)
+  const total = model.lambdaHome + model.lambdaAway
+  const candidates = [
+    { market:'Double Chance', selection:'Home/Draw', line:null, p:(outcomes?.home || 0)+(outcomes?.draw || 0) },
+    { market:'Double Chance', selection:'Draw/Away', line:null, p:(outcomes?.draw || 0)+(outcomes?.away || 0) },
+    { market:'Goals', selection:'Over', line:1.5, p:totalOverProbability(total,1.5) },
+    { market:'Goals', selection:'Under', line:3.5, p:totalUnderProbability(total,3.5) },
+    { market:'Goals', selection:'Over', line:2.5, p:totalOverProbability(total,2.5) },
+    { market:'Goals', selection:'Under', line:2.5, p:totalUnderProbability(total,2.5) },
+    { market:'BTTS', selection:'Yes', line:null, p:bttsProbability(model.lambdaHome,model.lambdaAway) },
+    { market:'BTTS', selection:'No', line:null, p:1-(bttsProbability(model.lambdaHome,model.lambdaAway) ?? 1) },
+  ].filter((x) => Number.isFinite(x.p))
+
+  const qualified = candidates
+    .filter((x) => x.p >= minProbability)
+    .sort((a,b) => b.p-a.p)
+    .slice(0,3)
+    .map((x,i) => ({
+      rank:i+1,
+      status:'QUALIFIED',
+      signalKey:[x.market,x.selection,x.line ?? ''].join('|'),
+      market:x.market,
+      selection:x.selection,
+      line:x.line,
+      bookmaker:null,
+      odds:null,
+      aiProbability:x.p,
+      impliedProbability:null,
+      fairOdds:fairOdds(x.p),
+      edgePP:null,
+      evPct:null,
+      confidence:x.p >= 0.78 ? 'HIGH' : 'MEDIUM',
+      stakeUnits:0,
+      why:`Statisticki model procenjuje verovatnocu na ${(x.p*100).toFixed(1)}% na osnovu skorasnje forme i Poisson modela. Kvota nije dostupna, pa value/EV nisu potvrdeni.`,
+      mainRisk:'Bez trenutne kvote ne moze da se potvrdi value. Promene sastava pre meca mogu promeniti procenu.',
+    }))
+
+  while (qualified.length < 3) qualified.push(noQualified(qualified.length+1,'Nijedna dodatna opcija nije presla statisticki prag.'))
+  return qualified
+}
+
 export function rankPrematchOptions({ model, odds, quality, lineupConfirmed = false, minOdds = 1.2, minEdgePP = 3, minEvPct = 2 }) {
   if (!model || quality?.label === 'LOW') return noQualifiedTop3('Insufficient data quality')
 
