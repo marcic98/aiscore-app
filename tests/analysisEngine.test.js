@@ -4,7 +4,7 @@ import {
   impliedProbability, edgePercentagePoints, expectedValuePercent, fairOdds,
   expectedValueDnbPercent, dataQualityScore, estimateExpectedGoals,
   rankPrematchOptions, settlePick, closingLineValuePercent,
-  liveStateHash, probabilityForMarket
+  liveStateHash, probabilityForMarket, classifyLineup
 } from '../src/analysisEngine.js'
 
 test('implied probability 2.00 = 50%', () => {
@@ -88,4 +88,15 @@ test('goal/red/minute changes live state identity', () => {
   const c = liveStateHash({ fixtureId: 1, minute: 56, homeGoals: 1, awayGoals: 0, redHome: 1, redAway: 0 })
   assert.notEqual(a, b)
   assert.notEqual(b, c)
+})
+
+
+test('lineup classifier never labels missing lineup as confirmed', () => {
+  assert.equal(classifyLineup([], null), 'UNAVAILABLE')
+  assert.equal(classifyLineup([], [{ team: 1 }, { team: 2 }]), 'PROJECTED')
+  const confirmed = [
+    { startXI: Array.from({ length: 11 }, (_, i) => ({ player: { id: i + 1 } })) },
+    { startXI: Array.from({ length: 11 }, (_, i) => ({ player: { id: i + 20 } })) },
+  ]
+  assert.equal(classifyLineup(confirmed, null), 'CONFIRMED')
 })
