@@ -28,5 +28,7 @@ export const getPrematchBundle = (fixture) => request('prematch_bundle', { param
 export const getLiveBundle = (fixture = null) => request('live_bundle', { params: fixture ? { fixture } : {} })
 export const saveAnalysis = (analysis, picks) => request('save_analysis', { method: 'POST', body: { analysis, picks } })
 export const getHistory = (limit = 100) => request('history', { params: { limit } })
-export const getAnalytics = ({ days = null, mode = null } = {}) => request('analytics', { params: { days, mode } })
+export const getAnalytics = ({ days = null, mode = null, market = null, confidence = null, league = null } = {}) =>
+  request('analytics', { params: { days, mode, market, confidence, league } })
+export const getOddsHistory = (fixture) => request('odds_history', { params: { fixture } })
 export const settleHistory = () => request('settle', { method: 'POST' })
