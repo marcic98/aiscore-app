@@ -59,9 +59,16 @@ function participant(f:any, side:string) {
 function mapStatus(f:any) {
   const name = String(f?.state?.name || "").toLowerCase();
   const dev = String(f?.state?.developer_name || "").toUpperCase();
+  const periods = Array.isArray(f?.periods) ? f.periods : [];
+  const active = periods.find((p:any) => p?.ticking === true) || [...periods].sort((a:any,b:any) => Number(b?.sort_order || 0)-Number(a?.sort_order || 0))[0];
+  const elapsed = Number.isFinite(Number(active?.minutes)) ? Number(active.minutes) : null;
+  const desc = String(active?.description || "").toUpperCase();
   if (dev.includes("FINISH") || name.includes("finished")) return { short:"FT", long:"Finished", elapsed:null };
-  if (dev.includes("BREAK") || name.includes("half")) return { short:"HT", long:f?.state?.name || "Half Time", elapsed:45 };
-  if (dev.includes("INPLAY") || name.includes("inplay") || name.includes("live")) return { short:"LIVE", long:f?.state?.name || "Live", elapsed:null };
+  if (dev.includes("BREAK") || name.includes("half time") || desc.includes("HALFTIME")) return { short:"HT", long:f?.state?.name || "Half Time", elapsed:45 };
+  if (dev.includes("INPLAY") || name.includes("inplay") || name.includes("live") || active?.ticking === true) {
+    const short = desc.includes("2ND") || Number(active?.counts_from) >= 45 ? "2H" : "1H";
+    return { short, long:f?.state?.name || "Live", elapsed };
+  }
   if (dev.includes("POSTPON") || name.includes("postpon")) return { short:"PST", long:f?.state?.name || "Postponed", elapsed:null };
   if (dev.includes("CANCEL") || name.includes("cancel")) return { short:"CANC", long:f?.state?.name || "Cancelled", elapsed:null };
   return { short:"NS", long:f?.state?.name || "Not Started", elapsed:null };
@@ -227,7 +234,7 @@ function todayUtc() { return new Date().toISOString().slice(0,10); }
 async function getRecent(teamId:number) {
   if (!teamId) return [];
   const body = await smFetch("/fixtures/between/" + daysAgo(240) + "/" + todayUtc() + "/" + teamId, {
-    include:"participants;scores;league;state",
+    include:"participants;scores;league;state;periods",
     order:"desc", per_page:"10",
   });
   return (body?.data || []).map(normalizeFixture);
@@ -253,7 +260,7 @@ Deno.serve(async (req:Request) => {
   try {
     if (action === "health") {
       const body = await smFetch("/fixtures/date/" + todayUtc(), {
-        include:"participants;league;state;scores",
+        include:"participants;league;state;scores;periods",
         per_page:"1",
       });
       return json(req,{
@@ -268,7 +275,7 @@ Deno.serve(async (req:Request) => {
     if (action === "today") {
       const date = url.searchParams.get("date") || todayUtc();
       const body = await smFetch("/fixtures/date/" + date, {
-        include:"participants;league;state;scores",
+        include:"participants;league;state;scores;periods",
         per_page:"50",
       });
       return json(req,{
@@ -281,7 +288,7 @@ Deno.serve(async (req:Request) => {
 
     if (action === "live_bundle" && !url.searchParams.get("fixture")) {
       const body = await smFetch("/livescores/inplay", {
-        include:"participants;league;state;scores",
+        include:"participants;league;state;scores;periods",
       });
       return json(req,{
         data:(body?.data || []).map(normalizeFixture),
@@ -295,7 +302,7 @@ Deno.serve(async (req:Request) => {
 
     if (action === "prematch_bundle") {
       const body = await smFetch("/fixtures/" + fixtureId, {
-        include:"participants;league;state;scores;lineups;metadata.type;sidelined.sideline",
+        include:"participants;league;state;scores;periods;lineups;metadata.type;sidelined.sideline",
       });
       const raw = body?.data;
       if (!raw) return json(req,{error:"Fixture not found"},404);
@@ -306,7 +313,7 @@ Deno.serve(async (req:Request) => {
       const settled = await Promise.allSettled([
         getRecent(homeId),
         getRecent(awayId),
-        smFetch("/fixtures/head-to-head/" + homeId + "/" + awayId,{include:"participants;scores;league;state",per_page:"10"}),
+        smFetch("/fixtures/head-to-head/" + homeId + "/" + awayId,{include:"participants;scores;league;state;periods",per_page:"10"}),
         getOdds(fixtureId,false),
       ]);
       const val=(i:number, fallback:any)=>settled[i]?.status==="fulfilled" ? (settled[i] as PromiseFulfilledResult<any>).value : fallback;
@@ -349,7 +356,7 @@ Deno.serve(async (req:Request) => {
 
     if (action === "live_bundle") {
       const body = await smFetch("/fixtures/" + fixtureId,{
-        include:"participants;league;state;scores;lineups;metadata.type;statistics.type;events",
+        include:"participants;league;state;scores;periods;lineups;metadata.type;statistics.type;events",
       });
       const raw=body?.data;
       if (!raw) return json(req,{error:"Fixture not found"},404);
