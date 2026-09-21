@@ -5,6 +5,39 @@ import {
   edgePercentagePoints, expectedValuePercent, liveStateHash, classifyLineup
 } from './analysisEngine'
 
+
+function extractContext(bundle, fixture) {
+  const standingsGroups = bundle?.standings?.[0]?.league?.standings || []
+  const table = standingsGroups.flat ? standingsGroups.flat() : []
+  const homeId = fixture?.teams?.home?.id
+  const awayId = fixture?.teams?.away?.id
+  const homeStanding = table.find((x) => x?.team?.id === homeId) || null
+  const awayStanding = table.find((x) => x?.team?.id === awayId) || null
+
+  const lastDate = (fixtures = []) => {
+    const dates = fixtures.map((x) => new Date(x?.fixture?.date).getTime()).filter(Number.isFinite)
+    return dates.length ? Math.max(...dates) : null
+  }
+  const matchTime = new Date(fixture?.fixture?.date).getTime()
+  const homeLast = lastDate(bundle?.home_recent || [])
+  const awayLast = lastDate(bundle?.away_recent || [])
+  const days = (last) => last && Number.isFinite(matchTime) ? Math.max(0, (matchTime - last) / 86400000) : null
+
+  return {
+    home_rank: homeStanding?.rank ?? null,
+    away_rank: awayStanding?.rank ?? null,
+    home_points: homeStanding?.points ?? null,
+    away_points: awayStanding?.points ?? null,
+    home_days_rest: days(homeLast),
+    away_days_rest: days(awayLast),
+    round: fixture?.league?.round || null,
+    referee: fixture?.fixture?.referee || null,
+    referee_stats: null,
+    weather: null,
+    tactical_structured_data: null,
+  }
+}
+
 function stableHash(input) {
   const text = typeof input === 'string' ? input : JSON.stringify(input)
   let hash = 2166136261
@@ -28,6 +61,8 @@ export function buildPrematchAnalysis(bundle, settings = {}) {
   const awaySeason = summarizeTeamSeason(bundle.away_team_stats)
   const lineupState = classifyLineup(bundle?.lineups || [], bundle?.projected_lineup || null)
   const confirmed = lineupState === 'CONFIRMED'
+
+  const context = extractContext(bundle, fixture)
 
   const quality = dataQualityScore({
     homeRecentSample: homeRecent.sampleSize || 0,
@@ -104,6 +139,7 @@ export function buildPrematchAnalysis(bundle, settings = {}) {
         lineup_status: lineupState,
         model_method: model?.method || null,
         unavailable: Object.entries(bundle.availability || {}).filter(([,v]) => v === false).map(([k]) => k),
+        context,
       },
     },
     picks,
@@ -114,6 +150,7 @@ export function buildPrematchAnalysis(bundle, settings = {}) {
     homeSeason,
     awaySeason,
     lineupStatus: lineupState,
+    context,
   }
 }
 
