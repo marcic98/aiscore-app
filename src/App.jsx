@@ -1,378 +1,516 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import {
-  Activity, BarChart3, Bell, Brain, ChevronLeft, ChevronRight, CircleUserRound,
+  Activity, BarChart3, Brain, ChevronLeft, ChevronRight, CircleUserRound,
   Clock3, Flame, Home, Radio, RefreshCw, ShieldCheck, Sparkles, Target,
   TrendingUp, Trophy, Zap
 } from 'lucide-react'
 import {
-  MAX_AUTO_SCAN, analyzeMatch, api, asNumber, chooseLiveOdd, initials,
-  normalizeStats, toSignal
-} from './liveCore'
+  buildPrematchAnalysis, buildLiveAnalysis
+} from './analysisService'
+import {
+  getToday, getPrematchBundle, getLiveBundle, saveAnalysis,
+  getHistory, getAnalytics, settleHistory
+} from './dataClient'
 
-const DEFAULT_SETTINGS = { minOdds: 1.2, minConfidence: 70 }
+const DEFAULT_SETTINGS = { minOdds: 1.2, minEdgePP: 3, minEvPct: 2 }
+const FILTERS = ['ALL','IGRAJ','PRESKOCI','HIGH CONFIDENCE','VALUE','LIVE','UPCOMING']
+const DETAIL_TABS = ['OVERVIEW','FORM','STATS','XG','GOALS','SHOTS','CORNERS','CARDS','LINEUPS','PLAYERS','H2H','ODDS','AI ANALYSIS']
 
-function StatusBadge({ action }) {
-  const cls = action === 'IGRAJ' ? 'play' : action === 'CEKAJ' ? 'wait' : 'skip'
-  return <span className={cls}>{action === 'IGRAJ' ? '▶ IGRAJ' : action === 'CEKAJ' ? '◷ CEKAJ' : '✕ PRESKOCI'}</span>
+function fmtPct(value, digits = 1) {
+  return Number.isFinite(Number(value)) ? `${(Number(value) * 100).toFixed(digits)}%` : '—'
+}
+function fmtNum(value, digits = 2) {
+  return Number.isFinite(Number(value)) ? Number(value).toFixed(digits) : '—'
+}
+function localDateKey() {
+  const d = new Date()
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2,'0')
+  const day = String(d.getDate()).padStart(2,'0')
+  return `${y}-${m}-${day}`
+}
+function fixtureStatus(f) {
+  return f?.fixture?.status?.short || '-'
+}
+function isLiveStatus(s) {
+  return ['1H','HT','2H','ET','BT','P','INT','LIVE'].includes(s)
+}
+function isFinishedStatus(s) {
+  return ['FT','AET','PEN','CANC','PST','ABD','AWD','WO'].includes(s)
+}
+function staleLabel(timestamp, mode = 'prematch') {
+  if (!timestamp) return 'DATA UNAVAILABLE'
+  const age = Date.now() - new Date(timestamp).getTime()
+  const threshold = mode === 'live' ? 90_000 : 30 * 60_000
+  return age > threshold ? 'DATA DELAYED' : 'FRESH'
+}
+function badgeClass(value) {
+  if (value === 'IGRAJ' || value === 'HIGH' || value === 'WIN') return 'good-badge'
+  if (value === 'CEKAJ' || value === 'MEDIUM' || value === 'VOID') return 'wait-badge'
+  return 'bad-badge'
+}
+function initials(name = '') {
+  return name.split(' ').filter(Boolean).map((x) => x[0]).join('').slice(0,3).toUpperCase() || '?'
+}
+function pickLabel(pick) {
+  if (pick?.status === 'NO_QUALIFIED_BET') return 'NO QUALIFIED BET'
+  if (!pick?.market) return 'NO QUALIFIED BET'
+  const line = pick.line !== null && pick.line !== undefined && !String(pick.selection).includes(String(pick.line)) ? ` ${pick.line}` : ''
+  return `${pick.market} · ${pick.selection || ''}${line}`
+}
+function analysisKey(result) {
+  return result?.analysis?.fixture_id
 }
 
-function SignalCard({ signal, onOpen }) {
-  return (
-    <button className="signal-card" onClick={() => onOpen(signal)}>
-      <div className="signal-top">
-        <span>{signal.league}</span><span>{signal.minute}</span><span className="live-dot">● LIVE</span>
-      </div>
-      <div className="teams-row">
-        <div className="team"><div className="badge">{initials(signal.home)}</div><span>{signal.home}</span></div>
-        <div className="score">{signal.score}</div>
-        <div className="team"><div className="badge alt">{initials(signal.away)}</div><span>{signal.away}</span></div>
-      </div>
-      <div className="signal-bottom">
-        <div className="tip-col"><small>PREDIKCIJA</small><strong>{signal.tip}</strong></div>
-        <div><small>POUZDANOST</small><strong className={signal.confidence >= 70 ? 'green' : 'red'}>{signal.confidence}%</strong></div>
-        <div><small>KVOTA</small><strong>{signal.odds}</strong></div>
-        <StatusBadge action={signal.action}/>
-      </div>
-    </button>
-  )
+function Header() {
+  return <header>
+    <div className="brand">
+      <div className="logo"><Activity size={24}/></div>
+      <div><div className="brand-title">AI <span>Score</span></div><div className="brand-sub">PROFESSIONAL FOOTBALL ANALYSIS</div></div>
+    </div>
+    <div className="engine-pill"><ShieldCheck size={15}/> VALUE ENGINE</div>
+  </header>
 }
 
-function HomeView({ signals, matches, loading, error, lastUpdated, credits, scanned, market, setMarket, onRefresh, onOpen }) {
-  const shown = useMemo(
-    () => market === 'Sve' ? signals : signals.filter((s) => s.market === market),
-    [market, signals]
-  )
-  const top = [...signals].sort((a, b) => {
-    if (a.action === 'IGRAJ' && b.action !== 'IGRAJ') return -1
-    if (b.action === 'IGRAJ' && a.action !== 'IGRAJ') return 1
-    return b.confidence - a.confidence
-  })[0]
+function LoadingBlock({ text = 'Analiziram podatke...' }) {
+  return <div className="empty loading-block"><RefreshCw className="spin" size={18}/>{text}</div>
+}
+
+function ErrorBlock({ error }) {
+  if (!error) return null
+  return <div className="api-error"><strong>DATA UNAVAILABLE</strong><span>{String(error)}</span></div>
+}
+
+function PickCard({ pick, title }) {
+  const qualified = pick?.status === 'QUALIFIED'
+  return <div className={`pick-card ${qualified ? 'qualified' : ''}`}>
+    <div className="pick-head">
+      <strong>{title}</strong>
+      <span className={badgeClass(qualified ? pick.confidence : 'LOW')}>{qualified ? pick.confidence : 'LOW'}</span>
+    </div>
+    {qualified || pick?.status === 'CEKAJ' ? <>
+      <h3>{pickLabel(pick)}</h3>
+      <div className="pick-metrics">
+        <div><small>ODDS</small><b>{fmtNum(pick.odds)}</b></div>
+        <div><small>AI %</small><b>{fmtPct(pick.aiProbability)}</b></div>
+        <div><small>IMPLIED</small><b>{fmtPct(pick.impliedProbability)}</b></div>
+        <div><small>FAIR ODDS</small><b>{fmtNum(pick.fairOdds)}</b></div>
+        <div><small>EDGE</small><b>{Number.isFinite(Number(pick.edgePP)) ? `${pick.edgePP >= 0 ? '+' : ''}${Number(pick.edgePP).toFixed(1)} pp` : '—'}</b></div>
+        <div><small>EV</small><b>{Number.isFinite(Number(pick.evPct)) ? `${pick.evPct >= 0 ? '+' : ''}${Number(pick.evPct).toFixed(1)}%` : '—'}</b></div>
+      </div>
+      <div className="explain-row"><small>WHY</small><p>{pick.why || '—'}</p></div>
+      <div className="explain-row risk"><small>MAIN RISK</small><p>{pick.mainRisk || '—'}</p></div>
+      <div className="stake-line">Stake suggestion: <strong>{pick.stakeUnits ?? 0}u</strong></div>
+    </> : <div className="no-bet-slot"><strong>NO QUALIFIED BET</strong><span>{pick?.why || 'Nema dovoljno kvalitetnog value-a.'}</span></div>}
+  </div>
+}
+
+function VerdictBox({ result }) {
+  const a = result?.analysis
+  if (!a) return null
+  return <section className="verdict-box">
+    <div>
+      <small>AISCORE VERDICT</small>
+      <strong className={badgeClass(a.verdict)}>{a.verdict}</strong>
+    </div>
+    <div><small>DATA QUALITY</small><b>{a.data_quality}</b><span>{Math.round(Number(a.data_quality_score || 0))}/100</span></div>
+    <div><small>CONFIDENCE</small><b>{a.confidence}</b></div>
+    <div><small>DATA</small><b>{staleLabel(a.data_last_updated, a.mode)}</b></div>
+  </section>
+}
+
+function TodayScreen({ fixtures, analyses, loading, analyzing, progress, filter, setFilter, error, onLoad, onAnalyzeAll, onOpen, onCheat }) {
+  const analyzedRows = useMemo(() => fixtures.map((fixture) => ({
+    fixture,
+    result: analyses[fixture.fixture?.id]?.result || null,
+  })), [fixtures, analyses])
+
+  const filtered = analyzedRows.filter(({ fixture, result }) => {
+    const status = fixtureStatus(fixture)
+    if (filter === 'ALL') return true
+    if (filter === 'LIVE') return isLiveStatus(status)
+    if (filter === 'UPCOMING') return ['NS','TBD'].includes(status)
+    if (!result) return false
+    if (filter === 'IGRAJ') return result.analysis.verdict === 'IGRAJ'
+    if (filter === 'PRESKOCI') return result.analysis.verdict === 'PRESKOCI'
+    if (filter === 'HIGH CONFIDENCE') return result.analysis.confidence === 'HIGH'
+    if (filter === 'VALUE') return result.picks.some((p) => p.status === 'QUALIFIED' && Number(p.edgePP) >= 3)
+    return true
+  })
+
+  const topPicks = Object.values(analyses)
+    .map((x) => x.result)
+    .flatMap((r) => r?.picks?.filter((p) => p.status === 'QUALIFIED').map((p) => ({ p, a: r.analysis })) || [])
+    .sort((x,y) => (Number(y.p.edgePP) + Number(y.p.evPct)/3) - (Number(x.p.edgePP) + Number(x.p.evPct)/3))
+    .slice(0,3)
 
   return <>
     <section className="hero-card premium">
-      <div className="hero-kicker">
-        <span><Sparkles size={14}/> AI SIGNAL</span>
-        <span className="confidence-pill"><ShieldCheck size={14}/> LIVE ANALIZA</span>
+      <div className="hero-kicker"><span><Sparkles size={14}/> TODAY'S PICKS</span><span className="confidence-pill"><ShieldCheck size={14}/> VALUE FIRST</span></div>
+      <div className="section-title"><Trophy size={20}/> Današnja analiza</div>
+      <p className="hero-copy">AIScore ne traži tip po svaku cenu. Bez dovoljno podataka ili value-a rezultat je PRESKOCI.</p>
+      <div className="hero-actions">
+        <button className="hero-cta compact" onClick={onAnalyzeAll} disabled={analyzing || !fixtures.length}><Brain size={19}/>{analyzing ? `ANALIZIRAM ${progress.done}/${progress.total}` : 'ANALIZIRAJ DANAS'}</button>
+        <button className="secondary-btn" onClick={onLoad} disabled={loading}><RefreshCw size={16}/>{loading ? 'UCITAVAM' : 'OSVEZI MEC'}</button>
       </div>
-      <div className="section-title"><Trophy size={20}/> {top ? 'Najbolji signal trenutno' : 'Spremno za LIVE skeniranje'}</div>
-
-      {top ? <>
-        <div className="hero-match">
-          <div className="match-left">
-            <div className="meta">{top.league} · {top.minute} · <span className="live-dot">● LIVE</span></div>
-            <div className="hero-teams">
-              <div className="hero-team"><div className="club">{initials(top.home)}</div><span>{top.home}</span></div>
-              <div className="hero-score">{top.score}<small>{top.minute}</small></div>
-              <div className="hero-team"><div className="club orange">{initials(top.away)}</div><span>{top.away}</span></div>
-            </div>
-          </div>
-          <div className="prediction-box">
-            <small>PREDIKCIJA</small><div className="prediction">{top.tip}</div>
-            <div className="numbers">
-              <div><small>POUZDANOST</small><b>{top.confidence}%</b></div>
-              <div><small>KVOTA</small><strong>{top.odds}</strong></div>
-            </div>
-          </div>
-        </div>
-        <button className="hero-cta" onClick={() => onOpen(top)}><Zap size={20}/> OTVORI ANALIZU <ChevronRight size={18}/></button>
-      </> : <div className="empty hero-empty">Pritisni OSVEZI LIVE da aplikacija ucita utakmice i potrazi signal.</div>}
+      {analyzing && <div className="progress-track"><div style={{ width: `${progress.total ? (progress.done/progress.total)*100 : 0}%` }}/></div>}
     </section>
 
-    <div className="refresh-strip">
-      <span><span className={loading ? 'pulse busy' : 'pulse'}/> {loading ? 'Skeniram...' : 'LIVE podaci'}</span>
-      <button className="refresh-btn" onClick={onRefresh} disabled={loading}><RefreshCw size={13}/>{loading ? 'CEKAJ' : 'OSVEZI LIVE'}</button>
-    </div>
-    <div className="live-meta">
-      <span>{lastUpdated ? `Osvezeno ${lastUpdated}` : 'Nije jos osvezeno'}</span>
-      <span>{credits !== null ? `${credits} zahteva preostalo` : ''}</span>
-    </div>
+    <ErrorBlock error={error}/>
 
-    {error && <div className="api-error">{error}</div>}
+    {topPicks.length > 0 && <section className="top-day">
+      <div className="list-heading"><span><Flame size={18}/> Statistički najzanimljivije</span><button className="text-btn" onClick={onCheat}>CHEAT SHEET</button></div>
+      {topPicks.map(({ p,a }, i) => <div className="day-pick-mini" key={`${a.fixture_id}-${p.signalKey || p.signal_key}-${i}`}>
+        <span>#{i+1}</span><div><strong>{a.home_team_name} - {a.away_team_name}</strong><small>{pickLabel(p)}</small></div>
+        <div><b>{fmtNum(p.odds)}</b><small>{Number(p.edgePP).toFixed(1)} pp edge</small></div>
+      </div>)}
+    </section>}
 
-    <div className="tabs">
-      <button className="active">LIVE</button><button disabled>Danas</button><button disabled>Kasnije</button><button disabled>Svi sportovi</button>
-    </div>
-    <div className="market-tabs">
-      {['Sve', 'Golovi'].map((x) => <button key={x} className={market === x ? 'active' : ''} onClick={() => setMarket(x)}>{x === 'Golovi' ? '⚽ ' : ''}{x}</button>)}
-    </div>
+    <div className="filter-strip">{FILTERS.map((x) => <button key={x} className={filter === x ? 'active' : ''} onClick={() => setFilter(x)}>{x}</button>)}</div>
 
-    <section className="signals">
-      <div className="list-heading">
-        <span><Flame size={18}/> Top LIVE signali</span>
-        <span className="muted">{signals.length ? `${signals.length} pronadjeno` : 'bez forsiranja'}</span>
-      </div>
-      {shown.length
-        ? shown.map((signal) => <SignalCard key={signal.id} signal={signal} onOpen={onOpen}/>)
-        : <div className="empty">{matches.length ? 'Nema dovoljno jakog signala za ovaj refresh.' : 'Osvezi LIVE da ucitas trenutne meceve.'}</div>}
-    </section>
-
-    <section className="stats">
-      <div><Radio/><span>LIVE mecevi</span><b>{matches.length}</b><small>trenutno</small></div>
-      <div><Target/><span>Analizirano</span><b>{scanned}</b><small>ovaj refresh</small></div>
-      <div><BarChart3/><span>IGRAJ</span><b>{signals.filter((s) => s.action === 'IGRAJ').length}</b><small>sa kvotom</small></div>
+    <section className="today-list">
+      <div className="list-heading"><span><Target size={18}/> Današnje utakmice</span><span className="muted">{fixtures.length} mečeva</span></div>
+      {loading && !fixtures.length ? <LoadingBlock text="Učitavam današnje utakmice..."/> : filtered.map(({ fixture, result }) => {
+        const id = fixture.fixture?.id
+        const status = fixtureStatus(fixture)
+        return <button className="match-row" key={id} onClick={() => onOpen(fixture)}>
+          <div className="match-time"><strong>{new Date(fixture.fixture?.date).toLocaleTimeString('sr-RS',{hour:'2-digit',minute:'2-digit'})}</strong><small>{status}</small></div>
+          <div className="match-names"><strong>{fixture.teams?.home?.name}</strong><span>vs</span><strong>{fixture.teams?.away?.name}</strong><small>{fixture.league?.name}</small></div>
+          <div className="match-verdict">{result ? <><span className={badgeClass(result.analysis.verdict)}>{result.analysis.verdict}</span><small>{result.analysis.data_quality} DATA</small></> : <><span className="neutral-badge">NIJE ANALIZIRANO</span><small>otvori meč</small></>}</div>
+          <ChevronRight size={17}/>
+        </button>
+      })}
     </section>
   </>
 }
 
-function DetailView({ signal, stats, loadingStats, loadStats, onBack }) {
-  useEffect(() => { if (!stats) loadStats(signal) }, [signal.id])
-  const home = normalizeStats(stats?.[0])
-  const away = normalizeStats(stats?.[1])
-  const rows = [
-    ['Sutevi', home['Total Shots'], away['Total Shots']],
-    ['U okvir', home['Shots on Goal'], away['Shots on Goal']],
-    ['Posed', home['Ball Possession'], away['Ball Possession']],
-    ['Korneri', home['Corner Kicks'], away['Corner Kicks']],
-    ['Zuti kartoni', home['Yellow Cards'], away['Yellow Cards']],
-    ['Crveni kartoni', home['Red Cards'], away['Red Cards']],
-  ]
+function CheatSheet({ analyses, onOpenById }) {
+  const rows = Object.values(analyses).flatMap(({ result }) => {
+    const a = result?.analysis
+    if (!a) return []
+    const qualified = result.picks.filter((p) => p.status === 'QUALIFIED')
+    if (!qualified.length) return [{ a, p: null }]
+    return qualified.map((p) => ({ a, p }))
+  })
+  return <section className="page-panel wide-panel">
+    <h2><BarChart3/> DAILY CHEAT SHEET</h2>
+    <p className="muted">Samo trenutno analizirani mečevi. Kvota i timestamp ostaju vezani za trenutak analize.</p>
+    <div className="cheat-table-wrap"><table className="cheat-table"><thead><tr>
+      <th>MATCH</th><th>MARKET</th><th>PICK</th><th>ODDS</th><th>AI %</th><th>IMPLIED</th><th>EDGE</th><th>EV</th><th>CONF.</th><th>STATUS</th>
+    </tr></thead><tbody>{rows.map(({a,p},i) => <tr key={`${a.fixture_id}-${i}`} onClick={() => onOpenById(a.fixture_id)}>
+      <td>{a.home_team_name} - {a.away_team_name}</td>
+      <td>{p?.market || '—'}</td><td>{p?.selection || 'NO QUALIFIED BET'}</td><td>{fmtNum(p?.odds)}</td>
+      <td>{fmtPct(p?.aiProbability)}</td><td>{fmtPct(p?.impliedProbability)}</td>
+      <td>{Number.isFinite(Number(p?.edgePP)) ? `${Number(p.edgePP).toFixed(1)} pp` : '—'}</td>
+      <td>{Number.isFinite(Number(p?.evPct)) ? `${Number(p.evPct).toFixed(1)}%` : '—'}</td>
+      <td>{p?.confidence || 'LOW'}</td><td><span className={badgeClass(a.verdict)}>{a.verdict}</span></td>
+    </tr>)}</tbody></table></div>
+    {!rows.length && <div className="empty">Prvo pokreni današnju analizu.</div>}
+  </section>
+}
+
+function MatchDetail({ fixture, stored, mode = 'prematch', onBack, onAnalyze, analyzing }) {
+  const [tab, setTab] = useState('OVERVIEW')
+  const result = stored?.result
+  const bundle = stored?.bundle
+  const a = result?.analysis
+  const picks = result?.picks || []
+  const home = fixture?.teams?.home
+  const away = fixture?.teams?.away
+
+  const renderTab = () => {
+    if (!bundle) return <div className="empty">Pokreni analizu da bi se učitali detaljni podaci.</div>
+    if (tab === 'OVERVIEW') return <div className="detail-copy">
+      <p><strong>Competition:</strong> {fixture.league?.name}</p>
+      <p><strong>Date:</strong> {new Date(fixture.fixture?.date).toLocaleString('sr-RS')}</p>
+      <p><strong>Status:</strong> {fixture.fixture?.status?.long || fixtureStatus(fixture)}</p>
+      <p><strong>Analysis generated at:</strong> {a ? new Date(a.analysis_generated_at).toLocaleString('sr-RS') : '—'}</p>
+      <p><strong>Data last updated:</strong> {a?.data_last_updated ? new Date(a.data_last_updated).toLocaleString('sr-RS') : 'DATA UNAVAILABLE'}</p>
+    </div>
+    if (tab === 'FORM') return <div className="two-col-detail">
+      <FormBlock name={home?.name} summary={result?.homeRecent}/><FormBlock name={away?.name} summary={result?.awayRecent}/>
+    </div>
+    if (tab === 'STATS') return <div className="two-col-detail">
+      <SeasonBlock name={home?.name} stats={result?.homeSeason}/><SeasonBlock name={away?.name} stats={result?.awaySeason}/>
+    </div>
+    if (tab === 'XG') return <Unavailable text="Current API integration does not provide verified xG/xGA. AIScore does not invent xG."/>
+    if (tab === 'GOALS') return <div className="two-col-detail"><GoalBlock name={home?.name} recent={result?.homeRecent}/><GoalBlock name={away?.name} recent={result?.awayRecent}/></div>
+    if (tab === 'SHOTS') return <Unavailable text={mode === 'live' && bundle.stats ? 'LIVE shots are included in current match statistics.' : 'Reliable aggregated prematch shots/SOT are not available in the current efficient API bundle.'}/>
+    if (tab === 'CORNERS') return <Unavailable text={mode === 'live' ? 'LIVE corners are available when fixture statistics provide them.' : 'Prematch corner trend aggregation is unavailable without extra per-fixture calls.'}/>
+    if (tab === 'CARDS') return <Unavailable text={mode === 'live' ? 'LIVE cards are included when fixture statistics provide them.' : 'Referee/card historical aggregates are not available in the current provider bundle.'}/>
+    if (tab === 'LINEUPS') return <LineupsBlock lineups={bundle.lineups || []}/>
+    if (tab === 'PLAYERS') return <PlayersBlock lineups={bundle.lineups || []}/>
+    if (tab === 'H2H') return <H2HBlock fixtures={bundle.h2h || []}/>
+    if (tab === 'ODDS') return <OddsBlock odds={bundle.odds || []}/>
+    if (tab === 'AI ANALYSIS') return <div className="detail-copy">
+      <p><strong>Method:</strong> deterministic weighted recent/season goal model + Poisson probabilities.</p>
+      <p><strong>Home expected goals:</strong> {fmtNum(result?.model?.lambdaHome)}</p>
+      <p><strong>Away expected goals:</strong> {fmtNum(result?.model?.lambdaAway)}</p>
+      <p><strong>Model total:</strong> {result?.model ? fmtNum(result.model.lambdaHome + result.model.lambdaAway) : 'DATA UNAVAILABLE'}</p>
+      <p><strong>Lineup status:</strong> {result?.lineupStatus || 'UNCONFIRMED'}</p>
+      <p className="muted">Tactical narratives, weather and referee tendencies are not fabricated when a verified structured source is unavailable.</p>
+    </div>
+    return null
+  }
 
   return <section className="detail-view">
     <button className="back-btn" onClick={onBack}><ChevronLeft/> Nazad</button>
     <div className="match-stage">
-      <div className="detail-meta"><span>{signal.league}</span><span className="live-dot">● LIVE</span></div>
+      <div className="detail-meta"><span>{fixture.league?.name}</span><span>{fixtureStatus(fixture)}</span></div>
       <div className="detail-teams">
-        <div className="detail-team"><div className="club big">{initials(signal.home)}</div><strong>{signal.home}</strong></div>
-        <div className="detail-score"><b>{signal.score}</b><span>{signal.minute}</span></div>
-        <div className="detail-team"><div className="club orange big">{initials(signal.away)}</div><strong>{signal.away}</strong></div>
+        <div className="detail-team"><div className="club big">{initials(home?.name)}</div><strong>{home?.name}</strong></div>
+        <div className="detail-score"><b>{isLiveStatus(fixtureStatus(fixture)) ? `${fixture.goals?.home ?? 0} : ${fixture.goals?.away ?? 0}` : 'VS'}</b><span>{fixture.fixture?.status?.elapsed ? `${fixture.fixture.status.elapsed}'` : new Date(fixture.fixture?.date).toLocaleTimeString('sr-RS',{hour:'2-digit',minute:'2-digit'})}</span></div>
+        <div className="detail-team"><div className="club orange big">{initials(away?.name)}</div><strong>{away?.name}</strong></div>
       </div>
     </div>
 
-    <div className="ai-signal-box">
-      <div className="signal-head"><Brain/><strong>LIVE signal</strong><span><ShieldCheck/> {signal.action}</span></div>
-      <div className="signal-main">
-        <div><small>PREDIKCIJA</small><h2>{signal.tip}</h2><p>{signal.reasons?.join(' · ')}</p></div>
-        <div className="signal-kpis">
-          <div><small>POUZDANOST</small><b>{signal.confidence}%</b></div>
-          <div><small>KVOTA</small><strong>{signal.odds}</strong></div>
-        </div>
-      </div>
-      <StatusBadge action={signal.action}/>
-    </div>
+    {!result ? <button className="hero-cta" disabled={analyzing} onClick={() => onAnalyze(fixture)}><Brain size={19}/>{analyzing ? 'ANALIZIRAM...' : mode === 'live' ? 'POKRENI LIVE ANALIZU' : 'POKRENI PREMATCH ANALIZU'}</button> : <>
+      <VerdictBox result={result}/>
+      <div className="section-heading">TOP 3 ANALYSIS</div>
+      {picks.slice(0,3).map((p,i) => <PickCard key={p.signalKey || p.signal_key || i} pick={p} title={i === 0 ? '#1 BEST BET' : i === 1 ? '#2 SECOND OPTION' : '#3 THIRD OPTION'}/>)}
+    </>}
 
-    <div className="analysis-card">
-      <div className="analysis-title"><TrendingUp/> Momentum <span>iz LIVE statistike</span></div>
-      <div className="momentum-labels">
-        <b>{signal.home}<em>{signal.momentumHome}%</em></b>
-        <b>{signal.away}<em>{signal.momentumAway}%</em></b>
-      </div>
-      <div className="momentum-track"><div style={{ width: `${signal.momentumHome}%` }}/></div>
-    </div>
-
-    <div className="analysis-card">
-      <div className="analysis-title"><BarChart3/> Statistika utakmice <span>LIVE</span></div>
-      {loadingStats ? <div className="empty">Ucitavam statistiku...</div> : (
-        <div className="stat-grid">{rows.map(([label, h, a]) => (
-          <div className="stat-tile" key={label}><span><Activity/></span><small>{label}</small><b>{h ?? '-'} - {a ?? '-'}</b></div>
-        ))}</div>
-      )}
-    </div>
-
-    <div className="analysis-card reason-card">
-      <div className="analysis-title"><Brain/> Zasto je signal prikazan</div>
-      <p>{signal.reasons?.length ? signal.reasons.join('. ') + '.' : 'Nema dovoljno jakog statistickog razloga za ulaz.'}</p>
-    </div>
+    <div className="detail-tabs">{DETAIL_TABS.map((x) => <button key={x} className={tab === x ? 'active' : ''} onClick={() => setTab(x)}>{x}</button>)}</div>
+    <div className="analysis-card detail-tab-content">{renderTab()}</div>
   </section>
 }
 
-function LiveView({ matches, signals, onOpen }) {
-  const signalMap = new Map(signals.map((s) => [s.id, s]))
-  const rows = matches.map((match) => signalMap.get(match.fixture?.id) || ({
-    id: match.fixture?.id,
-    league: match.league?.name || '-',
-    minute: match.fixture?.status?.elapsed ? `${match.fixture.status.elapsed}'` : match.fixture?.status?.short || 'LIVE',
-    home: match.teams?.home?.name || '-',
-    away: match.teams?.away?.name || '-',
-    score: `${match.goals?.home ?? 0} : ${match.goals?.away ?? 0}`,
-    tip: 'Nije medju top signalima',
-    market: 'Golovi',
-    confidence: 0,
-    odds: '—',
-    action: 'PRESKOCI',
-    reasons: ['Nije izabran za automatski signal.'],
-    momentumHome: 50,
-    momentumAway: 50,
-    raw: match,
-  }))
+function FormBlock({ name, summary }) {
+  return <div className="metric-block"><strong>{name}</strong>
+    <span>Sample: {summary?.sampleSize ?? 0}</span><span>GF avg: {fmtNum(summary?.gfAvg)}</span><span>GA avg: {fmtNum(summary?.gaAvg)}</span>
+    <span>PPG: {fmtNum(summary?.pointsPerGame)}</span><span>BTTS: {fmtPct(summary?.bttsRate)}</span><span>Over 2.5: {fmtPct(summary?.over25Rate)}</span>
+  </div>
+}
+function SeasonBlock({ name, stats }) {
+  return <div className="metric-block"><strong>{name}</strong>
+    <span>Home GF avg: {fmtNum(stats?.avgForHome)}</span><span>Away GF avg: {fmtNum(stats?.avgForAway)}</span>
+    <span>Home GA avg: {fmtNum(stats?.avgAgainstHome)}</span><span>Away GA avg: {fmtNum(stats?.avgAgainstAway)}</span>
+    <span>Form string: {stats?.form || 'DATA UNAVAILABLE'}</span>
+  </div>
+}
+function GoalBlock({ name, recent }) {
+  return <div className="metric-block"><strong>{name}</strong><span>GF avg: {fmtNum(recent?.gfAvg)}</span><span>GA avg: {fmtNum(recent?.gaAvg)}</span><span>Over 1.5: {fmtPct(recent?.over15Rate)}</span><span>Over 2.5: {fmtPct(recent?.over25Rate)}</span><span>Clean sheet: {fmtPct(recent?.cleanSheetRate)}</span><span>Failed to score: {fmtPct(recent?.failedToScoreRate)}</span></div>
+}
+function Unavailable({ text }) {
+  return <div className="unavailable"><strong>DATA UNAVAILABLE</strong><p>{text}</p></div>
+}
+function LineupsBlock({ lineups }) {
+  if (!lineups.length) return <Unavailable text="No confirmed lineup returned. AIScore will not display a projected lineup as confirmed."/>
+  return <div>{lineups.map((x) => <div className="lineup-team" key={x.team?.id}><strong>CONFIRMED · {x.team?.name}</strong><div>{(x.startXI || []).map((p) => <span key={p.player?.id}>{p.player?.name}</span>)}</div></div>)}</div>
+}
+function PlayersBlock({ lineups }) {
+  if (!lineups.length) return <Unavailable text="Player start probability is unavailable until a confirmed lineup exists. No player-prop confidence is generated."/>
+  return <div>{lineups.map((x) => <div className="lineup-team" key={x.team?.id}><strong>{x.team?.name}</strong><small>Confirmed starters only</small><div>{(x.startXI || []).map((p) => <span key={p.player?.id}>{p.player?.name}</span>)}</div></div>)}</div>
+}
+function H2HBlock({ fixtures }) {
+  if (!fixtures.length) return <Unavailable text="H2H unavailable."/>
+  return <div>{fixtures.slice(0,10).map((f) => <div className="h2h-row" key={f.fixture?.id}><span>{new Date(f.fixture?.date).toLocaleDateString('sr-RS')}</span><strong>{f.teams?.home?.name} {f.goals?.home} : {f.goals?.away} {f.teams?.away?.name}</strong></div>)}</div>
+}
+function OddsBlock({ odds }) {
+  if (!odds.length) return <Unavailable text="Odds provider returned no supported current prices. Edge/EV are not fabricated."/>
+  return <div>{odds.slice(0,30).map((o) => <div className="odds-row" key={o.signal_key}><span>{o.market}</span><strong>{o.selection}{o.line !== null ? ` ${o.line}` : ''}</strong><b>{fmtNum(o.odds)}</b><small>{o.bookmaker || 'bookmaker'}</small></div>)}</div>
+}
 
+function LiveScreen({ liveFixtures, liveLoading, liveError, onRefresh, onOpen }) {
   return <section className="page-panel">
-    <h2><Radio/> LIVE centar</h2><p className="muted">Svi trenutno dostupni LIVE mecevi.</p>
-    {rows.length ? rows.map((signal) => <SignalCard key={signal.id} signal={signal} onOpen={onOpen}/>) : <div className="empty">Prvo osvezi LIVE na Pocetnoj.</div>}
+    <div className="screen-head"><div><h2><Radio/> LIVE ANALYSIS</h2><p className="muted">Goal/red-card state changes create a new analysis identity.</p></div><button className="refresh-btn" onClick={onRefresh} disabled={liveLoading}><RefreshCw size={14}/>{liveLoading ? '...' : 'REFRESH'}</button></div>
+    <ErrorBlock error={liveError}/>
+    {liveLoading && !liveFixtures.length ? <LoadingBlock text="Učitavam LIVE mečeve..."/> : liveFixtures.map((f) => <button className="match-row" key={f.fixture?.id} onClick={() => onOpen(f)}>
+      <div className="match-time"><strong>{f.fixture?.status?.elapsed ? `${f.fixture.status.elapsed}'` : fixtureStatus(f)}</strong><small>LIVE</small></div>
+      <div className="match-names"><strong>{f.teams?.home?.name}</strong><span>{f.goals?.home ?? 0} : {f.goals?.away ?? 0}</span><strong>{f.teams?.away?.name}</strong><small>{f.league?.name}</small></div>
+      <div className="match-verdict"><span className="neutral-badge">ANALIZIRAJ</span><small>current state</small></div><ChevronRight size={17}/>
+    </button>)}
+    {!liveLoading && !liveFixtures.length && !liveError && <div className="empty">Trenutno nema dostupnih LIVE utakmica.</div>}
   </section>
 }
 
-function SignalsView({ signals, onOpen }) {
-  return <section className="page-panel">
-    <h2><BarChart3/> Signali</h2><p className="muted">Samo signali dobijeni iz trenutnih LIVE podataka.</p>
-    {signals.length ? [...signals].sort((a, b) => b.confidence - a.confidence).map((s) => <SignalCard key={s.id} signal={s} onOpen={onOpen}/>) : <div className="empty">Nema aktivnih signala.</div>}
+function SignalsScreen({ analyses, onOpenById }) {
+  const rows = Object.values(analyses).flatMap(({ result }) => result?.picks?.filter((p) => p.status === 'QUALIFIED').map((p) => ({a:result.analysis,p})) || [])
+    .sort((x,y) => Number(y.p.edgePP) - Number(x.p.edgePP))
+  return <section className="page-panel"><h2><Flame/> VALUE SIGNALI</h2><p className="muted">Rangirano po value-u, ne po najmanjoj kvoti.</p>
+    {rows.map(({a,p},i) => <button className="signal-value-row" key={`${a.fixture_id}-${i}`} onClick={() => onOpenById(a.fixture_id)}>
+      <div><strong>{a.home_team_name} - {a.away_team_name}</strong><small>{pickLabel(p)}</small></div><div><b>{fmtNum(p.odds)}</b><span>AI {fmtPct(p.aiProbability)}</span><span>Edge {Number(p.edgePP).toFixed(1)} pp</span></div>
+    </button>)}
+    {!rows.length && <div className="empty">Nema kvalifikovanih value signala.</div>}
   </section>
 }
 
-function HistoryView({ history }) {
-  return <section className="page-panel">
-    <h2><Clock3/> Istorija skeniranja</h2><p className="muted">Poslednji signali pronadjeni na ovom telefonu.</p>
-    {history.length ? history.map((h, i) => <div className="history-row" key={`${h.id}-${i}`}>
-      <div><strong>{h.home} - {h.away}</strong><small>{h.tip} · {h.odds} · {h.savedAt}</small></div>
-      <span className={h.action === 'IGRAJ' ? 'won' : 'muted'}>{h.action}</span>
-    </div>) : <div className="empty">Istorija je prazna.</div>}
+function HistoryScreen({ history, loading, error, onRefresh, settling }) {
+  return <section className="page-panel"><div className="screen-head"><div><h2><Clock3/> PICKS HISTORY</h2><p className="muted">Originalna kvota i analiza ostaju sačuvane.</p></div><button className="refresh-btn" onClick={onRefresh} disabled={loading || settling}><RefreshCw size={14}/>{settling ? 'SETTLE...' : 'REFRESH'}</button></div>
+    <ErrorBlock error={error}/>
+    {history.map((a) => <div className="history-analysis" key={a.id}>
+      <div className="history-analysis-head"><div><strong>{a.home_team_name} - {a.away_team_name}</strong><small>{a.mode.toUpperCase()} · {new Date(a.analysis_generated_at).toLocaleString('sr-RS')}</small></div><span className={badgeClass(a.verdict)}>{a.verdict}</span></div>
+      {(a.aiscore_analysis_picks || []).filter((p) => p.status === 'QUALIFIED').map((p) => <div className="history-pick" key={p.id}><span>{p.market} · {p.selection}</span><b>{fmtNum(p.odds)}</b><strong className={badgeClass(p.result || 'PENDING')}>{p.result || 'PENDING'}</strong></div>)}
+    </div>)}
+    {!loading && !history.length && <div className="empty">Istorija je prazna.</div>}
   </section>
 }
 
-function ProfileView({ settings, setSettings }) {
-  return <section className="page-panel profile">
-    <CircleUserRound size={54}/><h2>AI Score podesavanja</h2><p className="muted">Pragovi se cuvaju na ovom uredjaju.</p>
-    <label className="profile-card setting-card">
-      <span>Minimalna kvota</span>
-      <input type="number" min="1.01" max="5" step="0.05" value={settings.minOdds} onChange={(e) => setSettings((s) => ({ ...s, minOdds: Math.max(1.01, Number(e.target.value) || 1.2) }))}/>
-    </label>
-    <label className="profile-card setting-card">
-      <span>Minimalna pouzdanost</span>
-      <input type="number" min="50" max="95" step="1" value={settings.minConfidence} onChange={(e) => setSettings((s) => ({ ...s, minConfidence: Math.max(50, Math.min(95, Number(e.target.value) || 70)) }))}/>
-    </label>
-    <div className="profile-card"><span>Osvezavanje</span><b>RUCNO</b><RefreshCw/></div>
+function AnalyticsScreen({ analytics, loading, error, days, setDays, mode, setMode, onLoad, settings, setSettings }) {
+  const cards = [
+    ['Total Picks', analytics?.total_picks],['Wins', analytics?.wins],['Losses', analytics?.losses],['Voids', analytics?.voids],
+    ['Win Rate', analytics?.win_rate !== null && analytics?.win_rate !== undefined ? fmtPct(analytics.win_rate) : '—'],
+    ['Avg Odds', fmtNum(analytics?.average_odds)],['Avg Edge', analytics?.average_edge_pp != null ? `${Number(analytics.average_edge_pp).toFixed(1)} pp` : '—'],
+    ['Avg EV', analytics?.average_ev_pct != null ? `${Number(analytics.average_ev_pct).toFixed(1)}%` : '—'],
+    ['ROI', analytics?.roi != null ? fmtPct(analytics.roi) : '—'],['Units', analytics?.units != null ? Number(analytics.units).toFixed(2) : '—'],
+    ['Avg CLV', analytics?.average_clv_pct != null ? `${Number(analytics.average_clv_pct).toFixed(1)}%` : '—'],
+  ]
+  return <section className="page-panel"><div className="screen-head"><div><h2><TrendingUp/> ANALYTICS</h2><p className="muted">Performance po stvarno sačuvanim i settlementovanim predlozima.</p></div><button className="refresh-btn" onClick={onLoad} disabled={loading}><RefreshCw size={14}/></button></div>
+    <div className="analytics-filters"><select value={days} onChange={(e) => setDays(e.target.value)}><option value="7">7 DAYS</option><option value="30">30 DAYS</option><option value="90">90 DAYS</option><option value="">ALL TIME</option></select><select value={mode} onChange={(e) => setMode(e.target.value)}><option value="">ALL</option><option value="prematch">PREMATCH</option><option value="live">LIVE</option></select></div>
+    <ErrorBlock error={error}/>
+    <div className="analytics-grid">{cards.map(([label,value]) => <div key={label}><small>{label}</small><b>{value ?? '—'}</b></div>)}</div>
+    <div className="analysis-card"><div className="analysis-title"><BarChart3/> By Market</div>{Object.entries(analytics?.by_market || {}).map(([market,v]) => <div className="analytics-row" key={market}><span>{market}</span><b>{v.wins}W / {v.losses}L / {v.voids}V</b></div>)}</div>
+    <div className="analysis-card settings-box"><div className="analysis-title"><CircleUserRound/> Model Settings</div>
+      <label><span>Minimal odds</span><input type="number" step="0.05" min="1.01" value={settings.minOdds} onChange={(e) => setSettings((s) => ({...s,minOdds:Number(e.target.value)||1.2}))}/></label>
+      <label><span>Minimal edge (pp)</span><input type="number" step="0.5" min="0" value={settings.minEdgePP} onChange={(e) => setSettings((s) => ({...s,minEdgePP:Number(e.target.value)||0}))}/></label>
+      <label><span>Minimal EV (%)</span><input type="number" step="0.5" min="0" value={settings.minEvPct} onChange={(e) => setSettings((s) => ({...s,minEvPct:Number(e.target.value)||0}))}/></label>
+    </div>
   </section>
 }
 
 export default function App() {
   const [view, setView] = useState('Pocetna')
-  const [market, setMarket] = useState('Sve')
+  const [fixtures, setFixtures] = useState([])
+  const [analyses, setAnalyses] = useState({})
   const [selected, setSelected] = useState(null)
-  const [matches, setMatches] = useState([])
-  const [signals, setSignals] = useState([])
-  const [statsMap, setStatsMap] = useState({})
-  const [loading, setLoading] = useState(false)
-  const [loadingStats, setLoadingStats] = useState(false)
-  const [error, setError] = useState('')
-  const [lastUpdated, setLastUpdated] = useState('')
-  const [credits, setCredits] = useState(null)
-  const [scanned, setScanned] = useState(0)
-  const [history, setHistory] = useState(() => { try { return JSON.parse(localStorage.getItem('aiscore-history') || '[]') } catch { return [] } })
-  const [settings, setSettings] = useState(() => { try { return { ...DEFAULT_SETTINGS, ...JSON.parse(localStorage.getItem('aiscore-settings') || '{}') } } catch { return DEFAULT_SETTINGS } })
+  const [selectedMode, setSelectedMode] = useState('prematch')
+  const [todayLoading, setTodayLoading] = useState(false)
+  const [todayError, setTodayError] = useState('')
+  const [analyzing, setAnalyzing] = useState(false)
+  const [progress, setProgress] = useState({done:0,total:0})
+  const [filter, setFilter] = useState('ALL')
+  const [liveFixtures, setLiveFixtures] = useState([])
+  const [liveLoading, setLiveLoading] = useState(false)
+  const [liveError, setLiveError] = useState('')
+  const [history, setHistory] = useState([])
+  const [historyLoading, setHistoryLoading] = useState(false)
+  const [historyError, setHistoryError] = useState('')
+  const [settling, setSettling] = useState(false)
+  const [analytics, setAnalytics] = useState(null)
+  const [analyticsLoading, setAnalyticsLoading] = useState(false)
+  const [analyticsError, setAnalyticsError] = useState('')
+  const [days, setDays] = useState('30')
+  const [modeFilter, setModeFilter] = useState('')
+  const [settings, setSettings] = useState(() => {
+    try { return { ...DEFAULT_SETTINGS, ...JSON.parse(localStorage.getItem('aiscore-settings') || '{}') } }
+    catch { return DEFAULT_SETTINGS }
+  })
 
   useEffect(() => { localStorage.setItem('aiscore-settings', JSON.stringify(settings)) }, [settings])
+  useEffect(() => { loadToday() }, [])
+  useEffect(() => { if (view === 'Istorija') refreshHistory(); if (view === 'Analitika') loadAnalytics() }, [view])
 
-  async function getStats(match) {
-    const id = match?.fixture?.id
-    if (!id) return []
-    if (statsMap[id]) return statsMap[id]
-    const result = await api('stats', id)
-    if (result.credits_remaining !== null && result.credits_remaining !== undefined) setCredits(result.credits_remaining)
-    const data = result.data || []
-    setStatsMap((prev) => ({ ...prev, [id]: data }))
-    return data
+  async function loadToday() {
+    if (todayLoading) return
+    setTodayLoading(true); setTodayError('')
+    try {
+      const data = await getToday(localDateKey())
+      setFixtures(data.data || [])
+    } catch (e) {
+      setTodayError(e.message === 'API_FOOTBALL_KEY nije podesen na backendu'
+        ? 'Sports API key nije konfigurisan na backendu. UI i engine su spremni, ali stvarni podaci ne mogu da se učitaju.'
+        : e.message)
+    } finally { setTodayLoading(false) }
   }
 
-  async function getOdds(id) {
-    try {
-      const result = await api('odds', id)
-      if (result.credits_remaining !== null && result.credits_remaining !== undefined) setCredits(result.credits_remaining)
-      return result.data || []
-    } catch {
-      return []
+  async function analyzePrematch(fixture) {
+    const id = fixture?.fixture?.id
+    if (!id) return null
+    const bundle = await getPrematchBundle(id)
+    const result = buildPrematchAnalysis(bundle, settings)
+    await saveAnalysis(result.analysis, result.picks)
+    const stored = { bundle, result }
+    setAnalyses((prev) => ({ ...prev, [id]: stored }))
+    return stored
+  }
+
+  async function analyzeToday() {
+    if (analyzing) return
+    const candidates = fixtures.filter((f) => !isFinishedStatus(fixtureStatus(f))).slice(0,8)
+    setAnalyzing(true); setProgress({done:0,total:candidates.length}); setTodayError('')
+    for (let i = 0; i < candidates.length; i += 1) {
+      try { await analyzePrematch(candidates[i]) }
+      catch (e) { setTodayError((prev) => prev || `Neki mečevi nisu analizirani: ${e.message}`) }
+      setProgress({done:i+1,total:candidates.length})
     }
+    setAnalyzing(false)
+  }
+
+  async function openPrematch(fixture) {
+    setSelectedMode('prematch'); setSelected(fixture)
+    if (!analyses[fixture.fixture?.id]) {
+      setAnalyzing(true)
+      try { await analyzePrematch(fixture) } catch (e) { setTodayError(e.message) }
+      finally { setAnalyzing(false) }
+    }
+  }
+
+  function openById(id) {
+    const fixture = fixtures.find((f) => f.fixture?.id === Number(id))
+    if (fixture) openPrematch(fixture)
   }
 
   async function refreshLive() {
-    if (loading) return
-    setLoading(true); setError(''); setSignals([]); setScanned(0)
-
+    if (liveLoading) return
+    setLiveLoading(true); setLiveError('')
     try {
-      const live = await api('live')
-      const list = live.data || []
-      setMatches(list)
-      if (live.credits_remaining !== null && live.credits_remaining !== undefined) setCredits(live.credits_remaining)
-
-      const candidates = list
-        .filter((m) => { const minute = asNumber(m.fixture?.status?.elapsed); return minute >= 25 && minute <= 86 })
-        .sort((a, b) => asNumber(b.fixture?.status?.elapsed) - asNumber(a.fixture?.status?.elapsed))
-        .slice(0, MAX_AUTO_SCAN)
-
-      const found = []
-      for (const match of candidates) {
-        try {
-          const stats = await getStats(match)
-          const analysis = analyzeMatch(match, stats)
-          setScanned((n) => n + 1)
-          if (analysis.confidence < settings.minConfidence) continue
-
-          let oddPick = null
-          if (analysis.side) {
-            const odds = await getOdds(match.fixture?.id)
-            oddPick = chooseLiveOdd(
-              odds,
-              analysis.side,
-              asNumber(match.goals?.home) + asNumber(match.goals?.away),
-              settings.minOdds
-            )
-          }
-
-          const signal = toSignal(match, analysis, oddPick, settings.minConfidence)
-          if (signal.action !== 'PRESKOCI') found.push(signal)
-        } catch {
-          setScanned((n) => n + 1)
-        }
-      }
-
-      found.sort((a, b) => b.confidence - a.confidence)
-      setSignals(found)
-      const time = new Date().toLocaleTimeString('sr-RS', { hour: '2-digit', minute: '2-digit' })
-      setLastUpdated(time)
-
-      if (found.length) {
-        const saved = found.map((s) => ({ ...s, raw: undefined, savedAt: time }))
-        const next = [...saved, ...history].slice(0, 30)
-        setHistory(next)
-        localStorage.setItem('aiscore-history', JSON.stringify(next))
-      }
-    } catch (e) {
-      setError(e.message === 'API_FOOTBALL_KEY nije podesen na backendu'
-        ? 'LIVE API jos nije aktiviran. Potrebno je jednom dodati API_FOOTBALL_KEY na backend.'
-        : e.message || 'Ne mogu da ucitam LIVE podatke.')
-    } finally {
-      setLoading(false)
-    }
+      const data = await getLiveBundle()
+      setLiveFixtures(data.data || [])
+    } catch (e) { setLiveError(e.message) }
+    finally { setLiveLoading(false) }
   }
 
-  async function loadDetailStats(signal) {
-    if (!signal?.id || statsMap[signal.id]) return
-    setLoadingStats(true)
+  async function openLive(fixture) {
+    const id = fixture.fixture?.id
+    setSelectedMode('live'); setSelected(fixture); setAnalyzing(true); setLiveError('')
     try {
-      const match = signal.raw || matches.find((m) => m.fixture?.id === signal.id)
-      if (match) await getStats(match)
-    } finally {
-      setLoadingStats(false)
-    }
+      const [liveBundle, prematchBundle] = await Promise.all([getLiveBundle(id), getPrematchBundle(id)])
+      const baseline = buildPrematchAnalysis(prematchBundle, settings)
+      const liveResult = buildLiveAnalysis(liveBundle, baseline, settings)
+      await saveAnalysis(liveResult.analysis, liveResult.picks)
+      setAnalyses((prev) => ({ ...prev, [id]: { bundle: { ...prematchBundle, ...liveBundle, odds: liveBundle.odds, lineups: liveBundle.lineups }, result: { ...liveResult, model: baseline.model, homeRecent: baseline.homeRecent, awayRecent: baseline.awayRecent, homeSeason: baseline.homeSeason, awaySeason: baseline.awaySeason, lineupStatus: liveBundle.lineups?.length ? 'CONFIRMED' : baseline.lineupStatus } } }))
+      setSelected(liveBundle.fixture || fixture)
+    } catch (e) { setLiveError(e.message) }
+    finally { setAnalyzing(false) }
   }
 
-  const switchView = (name) => { setSelected(null); setView(name) }
+  async function refreshHistory() {
+    setHistoryLoading(true); setHistoryError(''); setSettling(true)
+    try {
+      await settleHistory().catch(() => null)
+      const data = await getHistory(100)
+      setHistory(data.data || [])
+    } catch (e) { setHistoryError(e.message) }
+    finally { setHistoryLoading(false); setSettling(false) }
+  }
 
-  return (
-    <div className="app-shell">
-      <header>
-        <div className="brand">
-          <div className="logo"><Activity size={24}/></div>
-          <div><div className="brand-title">AI <span>Score</span></div><div className="brand-sub">VISE OD PREDIKCIJE</div></div>
-        </div>
-        <button className="bell-btn" onClick={refreshLive} aria-label="Osvezi LIVE"><Bell size={19}/><span/></button>
-      </header>
+  async function loadAnalytics() {
+    setAnalyticsLoading(true); setAnalyticsError('')
+    try { setAnalytics(await getAnalytics({ days: days || null, mode: modeFilter || null })) }
+    catch (e) { setAnalyticsError(e.message) }
+    finally { setAnalyticsLoading(false) }
+  }
+  useEffect(() => { if (view === 'Analitika') loadAnalytics() }, [days, modeFilter])
 
-      <main>
-        {selected
-          ? <DetailView signal={selected} stats={statsMap[selected.id]} loadingStats={loadingStats} loadStats={loadDetailStats} onBack={() => setSelected(null)}/>
-          : <>
-            {view === 'Pocetna' && <HomeView signals={signals} matches={matches} loading={loading} error={error} lastUpdated={lastUpdated} credits={credits} scanned={scanned} market={market} setMarket={setMarket} onRefresh={refreshLive} onOpen={setSelected}/>}
-            {view === 'LIVE' && <LiveView matches={matches} signals={signals} onOpen={setSelected}/>}
-            {view === 'Signali' && <SignalsView signals={signals} onOpen={setSelected}/>}
-            {view === 'Istorija' && <HistoryView history={history}/>}
-            {view === 'Profil' && <ProfileView settings={settings} setSettings={setSettings}/>}
-          </>}
-      </main>
+  const selectedStored = selected ? analyses[selected.fixture?.id] : null
 
-      {!selected && <nav className="bottom-nav">
-        {[['Pocetna', Home], ['LIVE', Radio], ['Signali', BarChart3], ['Istorija', Clock3], ['Profil', CircleUserRound]].map(([name, Icon]) => (
-          <button key={name} className={view === name ? 'active' : ''} onClick={() => switchView(name)}><Icon/><span>{name}</span></button>
-        ))}
-      </nav>}
-    </div>
-  )
+  return <div className="app-shell">
+    <Header/>
+    <main>
+      {selected ? <MatchDetail fixture={selected} stored={selectedStored} mode={selectedMode} onBack={() => setSelected(null)} onAnalyze={selectedMode === 'live' ? openLive : analyzePrematch} analyzing={analyzing}/> : <>
+        {view === 'Pocetna' && <TodayScreen fixtures={fixtures} analyses={analyses} loading={todayLoading} analyzing={analyzing} progress={progress} filter={filter} setFilter={setFilter} error={todayError} onLoad={loadToday} onAnalyzeAll={analyzeToday} onOpen={openPrematch} onCheat={() => setView('Cheat')}/>}
+        {view === 'LIVE' && <LiveScreen liveFixtures={liveFixtures} liveLoading={liveLoading} liveError={liveError} onRefresh={refreshLive} onOpen={openLive}/>}
+        {view === 'Signali' && <SignalsScreen analyses={analyses} onOpenById={openById}/>}
+        {view === 'Cheat' && <CheatSheet analyses={analyses} onOpenById={openById}/>}
+        {view === 'Istorija' && <HistoryScreen history={history} loading={historyLoading} error={historyError} onRefresh={refreshHistory} settling={settling}/>}
+        {view === 'Analitika' && <AnalyticsScreen analytics={analytics} loading={analyticsLoading} error={analyticsError} days={days} setDays={setDays} mode={modeFilter} setMode={setModeFilter} onLoad={loadAnalytics} settings={settings} setSettings={setSettings}/>}
+      </>}
+    </main>
+
+    {!selected && <nav className="bottom-nav">
+      {[
+        ['Pocetna',Home],['LIVE',Radio],['Signali',Flame],['Istorija',Clock3],['Analitika',BarChart3]
+      ].map(([name,Icon]) => <button key={name} className={view === name || (name === 'Signali' && view === 'Cheat') ? 'active' : ''} onClick={() => setView(name)}><Icon/><span>{name}</span></button>)}
+    </nav>}
+  </div>
 }
